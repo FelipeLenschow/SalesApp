@@ -107,6 +107,14 @@ class SyncClient:
                 self.db.add_product(product_info, shop_name)
                 count += 1
             
+            
+            # 4. Update Config
+            shop_config = data.get("shop_config", {})
+            if shop_config:
+                for key, value in shop_config.items():
+                    if value is not None:
+                        self.db.set_config(key, value)
+            
             results["downloaded"] = count
             results["message"] = "Sync completed successfully"
             

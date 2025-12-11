@@ -97,11 +97,20 @@ def sync_data(payload: SyncPayload):
         try:
              with database.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, password FROM shops WHERE name = ?", (payload.shop_name,))
+                cursor.execute("SELECT id, password, device, id_token, pos_name, user_id FROM shops WHERE name = ?", (payload.shop_name,))
                 row = cursor.fetchone()
+                shop_config = {}
                 if row:
                     shop_id = row[0]
                     stored_password = row[1]
+                    
+                    # Store config for response
+                    shop_config = {
+                        "device": row[2],
+                        "id_token": row[3],
+                        "pos_name": row[4],
+                        "user_id": row[5]
+                    }
                     
                     # Normalize passwords for comparison (treat None as empty string)
                     db_pass = stored_password if stored_password is not None else ""
@@ -194,7 +203,7 @@ def sync_data(payload: SyncPayload):
         print(f"Error fetching products: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {"status": "success", "imported_sales": count, "products_update": products}
+    return {"status": "success", "imported_sales": count, "products_update": products, "shop_config": shop_config}
 
 def start_server(host="0.0.0.0", port=8000):
     uvicorn.run(app, host=host, port=port)

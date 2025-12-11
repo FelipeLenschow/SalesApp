@@ -5,18 +5,26 @@ from PIL import Image, ImageTk  # Ensure both Image and ImageTk are imported
 import threading
 import time
 
-import src.config as config
+
 
 class Payment:
     def __init__(self, app, shop):
         self.shop = shop
         self.app = app
 
-    def create_payment_intent_card(self, amount, internal_id):
+    def _get_config(self, key):
+        val = self.app.product_db.get_config(key)
+        if not val:
+            raise ValueError(f"Configuração '{key}' não encontrada. Sincronize a loja novamente.")
+        return val
 
-        url = "https://api.mercadopago.com/point/integration-api/devices/" + config.device + "/payment-intents"
+    def create_payment_intent_card(self, amount, internal_id):
+        device = self._get_config('device')
+        id_token = self._get_config('id_token')
+
+        url = "https://api.mercadopago.com/point/integration-api/devices/" + device + "/payment-intents"
         headers = {
-            "Authorization": "Bearer " + config.id_token,
+            "Authorization": "Bearer " + id_token,
             "Content-Type": "application/json"
         }
         payload = {
@@ -35,10 +43,12 @@ class Payment:
             return {"error": str(e)}
 
     def create_payment_intent_debit(self, amount, internal_id):
+        device = self._get_config('device')
+        id_token = self._get_config('id_token')
 
-        url = "https://api.mercadopago.com/point/integration-api/devices/" + config.device + "/payment-intents"
+        url = "https://api.mercadopago.com/point/integration-api/devices/" + device + "/payment-intents"
         headers = {
-            "Authorization": "Bearer " + config.id_token,
+            "Authorization": "Bearer " + id_token,
             "Content-Type": "application/json"
         }
         payload = {
@@ -60,10 +70,12 @@ class Payment:
             return {"error": str(e)}
 
     def create_payment_intent_credit(self, amount, internal_id):
+        device = self._get_config('device')
+        id_token = self._get_config('id_token')
 
-        url = "https://api.mercadopago.com/point/integration-api/devices/" + config.device + "/payment-intents"
+        url = "https://api.mercadopago.com/point/integration-api/devices/" + device + "/payment-intents"
         headers = {
-            "Authorization": "Bearer " + config.id_token,
+            "Authorization": "Bearer " + id_token,
             "Content-Type": "application/json"
         }
         payload = {
@@ -87,9 +99,13 @@ class Payment:
             return {"error": str(e)}
 
     def create_payment_intent_pix(self, amount, internal_id):
-        url = "https://api.mercadopago.com/instore/orders/qr/seller/collectors/" + config.user_id + "/pos/" + config.pos_name + "/qrs"
+        user_id = self._get_config('user_id')
+        pos_name = self._get_config('pos_name')
+        id_token = self._get_config('id_token')
+
+        url = "https://api.mercadopago.com/instore/orders/qr/seller/collectors/" + user_id + "/pos/" + pos_name + "/qrs"
         headers = {
-            "Authorization": "Bearer " + config.id_token,
+            "Authorization": "Bearer " + id_token,
             "Content-Type": "application/json"
         }
         payload = {
@@ -115,10 +131,11 @@ class Payment:
             return {"error": str(e)}
 
     def confirm_payment_card(self, payment_intent_id):
-
+        id_token = self._get_config('id_token')
+        
         url = f"https://api.mercadopago.com/point/integration-api/payment-intents/{payment_intent_id}"
         headers = {
-            "Authorization": "Bearer " + config.id_token,
+            "Authorization": "Bearer " + id_token,
         }
 
         try:
@@ -129,10 +146,13 @@ class Payment:
             return {"error": str(e)}
 
     def confirm_payment_pix(self):
+        user_id = self._get_config('user_id')
+        pos_name = self._get_config('pos_name')
+        id_token = self._get_config('id_token')
 
-        url = "https://api.mercadopago.com/instore/qr/seller/collectors/" + config.user_id + "/pos/" + config.pos_name + "/orders"
+        url = "https://api.mercadopago.com/instore/qr/seller/collectors/" + user_id + "/pos/" + pos_name + "/orders"
         headers = {
-            "Authorization": "Bearer " + config.id_token,
+            "Authorization": "Bearer " + id_token,
             "Content-Type": "application/json"
         }
 
@@ -144,10 +164,13 @@ class Payment:
             return {"error": str(e)}
 
     def delete_pix(self):
+        user_id = self._get_config('user_id')
+        pos_name = self._get_config('pos_name')
+        id_token = self._get_config('id_token')
 
-        url = "https://api.mercadopago.com/instore/qr/seller/collectors/" + config.user_id + "/pos/" + config.pos_name + "/orders"
+        url = "https://api.mercadopago.com/instore/qr/seller/collectors/" + user_id + "/pos/" + pos_name + "/orders"
         headers = {
-            "Authorization": "Bearer " + config.id_token,
+            "Authorization": "Bearer " + id_token,
             "Content-Type": "application/json"
         }
 

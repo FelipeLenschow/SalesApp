@@ -9,7 +9,7 @@ class Sale:
         self.final_price = 0.0
         self.id = str(uuid.uuid4())
 
-    def apply_promotion(self):
+    def calculate_total(self):
         total_price = 0.0
 
         # Calcula o preço total (sem promoções)
@@ -43,3 +43,7 @@ class Sale:
             self.current_sale[excel_row]['quantidade'] = max(quantity, 0)
             if self.current_sale[excel_row]['quantidade'] == 0:
                 self.remove_product(excel_row)
+
+    def update_price(self, excel_row, new_price):
+        if excel_row in self.current_sale:
+            self.current_sale[excel_row]['preco'] = new_price

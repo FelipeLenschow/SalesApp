@@ -458,7 +458,7 @@ class ProductApp:
                 controls=[
                     ft.Column(
                         [
-                            ft.Text("Sorveteria Lolla", size=60 * self.scale_factor, weight=ft.FontWeight.BOLD,
+                            ft.Text("Sorveteria", size=60 * self.scale_factor, weight=ft.FontWeight.BOLD,
                                     color="white"),
                             ft.Text(f"   {self.shop}", size=40 * self.scale_factor, color="white"),
                         ],
@@ -668,10 +668,20 @@ class ProductApp:
                 self.status_text.color = color
                 self.status_text.update()
 
+                def clear_status():
+                    time.sleep(10)
+                    try:
+                        if self.status_text.value == short_msg:
+                            self.status_text.value = ""
+                            self.status_text.update()
+                    except:
+                        pass
+                threading.Thread(target=clear_status, daemon=True).start()
+
         except Exception as e:
             print(f"Failed to update status_text: {e}")
 
-        self.page.snack_bar = ft.SnackBar(content=ft.Text(message), bgcolor=color)
+        self.page.snack_bar = ft.SnackBar(content=ft.Text(message), bgcolor=color, duration=10000)
         self.page.snack_bar.open = True
         self.page.update()
 
@@ -954,9 +964,9 @@ class ProductApp:
                 self.barcode_entry.focus()
         self.page.update()
 
-    def update_sale_display(self, focus_on_=None):
+    def update_sale_display(self, focus_on_=None, skip_price_update_for=None):
         # Aplica promoções e calcula o preço final
-        final_price = self.sale.apply_promotion()
+        final_price = self.sale.calculate_total()
         self.final_price_label.value = f"R${final_price:.2f}"
 
         self.payment_method_var.value = self.sale.payment_method
@@ -986,11 +996,11 @@ class ProductApp:
             details = {
                 'categoria': product_series[('Todas', 'Categoria')],
                 'sabor': product_series[('Todas', 'Sabor')],
-                'preco': float(product_series[(self.sale.shop, 'Preco')]),
+                'preco': self.sale.current_sale[excel_row]['preco'],
                 'quantidade': self.sale.current_sale[excel_row]['quantidade'],
                 'indexExcel': excel_row
             }
-            self.create_or_update_product_widget(excel_row, details)
+            self.create_or_update_product_widget(excel_row, details, skip_price_update=(excel_row == skip_price_update_for))
 
         # Se um produto foi passado, focar no widget de quantidade correspondente
         if focus_on_ is not None:
@@ -1005,7 +1015,7 @@ class ProductApp:
         self.create_or_update_sale_widgets()
         self.page.update()
 
-    def create_or_update_product_widget(self, excel_row, details):
+    def create_or_update_product_widget(self, excel_row, details, skip_price_update=False):
 
         if excel_row not in self.product_widgets:
             product_text = ft.Text(
@@ -1031,11 +1041,13 @@ class ProductApp:
             )
 
             # Price display
-            price_text = ft.Text(
-                value=f"R${details['preco']:.2f}",
-                color="white",
-                size=font_size,
-                width=200 * self.scale_factor
+            price_text = ft.TextField(
+                value=f"{details['preco']:.2f}",
+                width=180 * self.scale_factor,
+                text_size=font_size,
+                text_align=ft.TextAlign.RIGHT,
+                prefix_text="R$ ",
+                on_change=lambda e, row=excel_row: self.update_price_dynamic(row, e.control.value)
             )
 
             # Delete button
@@ -1099,8 +1111,10 @@ class ProductApp:
             color = "white"
 
             # Update price display
-            widgets['price_text'].value = f"R${price:.2f}"
-            widgets['price_text'].color = color
+            if not skip_price_update:
+                if widgets['price_text'].value != f"{price:.2f}":
+                    widgets['price_text'].value = f"{price:.2f}"
+            # widgets['price_text'].color = color
 
             # Force UI updates
             widgets['product_text'].update()
@@ -1175,6 +1189,24 @@ class ProductApp:
         except ValueError:
             if quantity_var != "":
                 self.show_error(f"Por favor, insira um número válido. ({quantity_var})")
+
+    def update_price_dynamic(self, index_excel, price_var):
+        try:
+            # Handle comma/dot and currency symbols if present
+            clean_price = price_var.replace('R$', '').replace(' ', '').replace(',', '.')
+            if not clean_price: 
+                return
+
+            new_price = float(clean_price)
+            if new_price < 0:
+                new_price = 0.0
+            
+            self.sale.update_price(index_excel, new_price)
+            # Update entire display to recalculate totals, but be careful with focus
+            # For now, we update everything to ensure consistency
+            self.update_sale_display(skip_price_update_for=index_excel)
+        except ValueError:
+            pass # Allow user to type unfinished numbers
 
     def delete_product(self, excel_row):
         self.sale.remove_product(excel_row)
@@ -1282,9 +1314,12 @@ class ProductApp:
         # Update interface
         self.page.update()
 
-        # Create new sale if deleting current one
+        # If deleting the current sale, switch to another or create new if empty
         if self.sale.id == sale_id:
-            self.new_sale()
+            if self.stored_sales:
+                self.open_sale(self.stored_sales[-1].id)
+            else:
+                self.new_sale()
 
     def cobra(self):
         # Alias if needed, or remove.
@@ -1295,7 +1330,7 @@ class ProductApp:
             self.show_error("Nenhum produto na venda!")
             return
 
-        final_price = self.sale.apply_promotion()
+        final_price = self.sale.calculate_total()
 
         payment_content = ft.Column([
             ft.Text(f"Valor Total: R${final_price:.2f}", size=4),
@@ -1353,7 +1388,7 @@ class ProductApp:
             return
 
         # Apply promotion and calculate final price
-        final_price = sale.apply_promotion()
+        final_price = sale.calculate_total()
 
         # Save sale details
         # Save sale logic moved to record_sale
@@ -1470,8 +1505,6 @@ class ProductApp:
                             raise ValueError(f"Valor inteiro inválido: {value}")
 
                 preco_val = parse_float(new_preco)
-                promo_preco_val = parse_float(new_promo_preco) if new_promo_preco else None
-                promo_qt_val = parse_int(new_promo_qt) if new_promo_qt else None
 
                 # Prepare product data
                 product_info = {
@@ -1479,14 +1512,17 @@ class ProductApp:
                     'sabor': new_sabor,
                     'categoria': new_categoria,
                     'preco': preco_val,
-                    'promo_preco': None,
-                    'promo_qt': None,
                     'indexExcel': index_excel
                 }
 
                 # Update product in database
                 self.product_db.add_product(product_info, shop)
                 self.mark_unsynced()
+
+                # Update price in current sale if item exists
+                if index_excel and index_excel in self.sale.current_sale:
+                    self.sale.update_price(index_excel, preco_val)
+
                 self.update_sale_display()
 
                 # Close dialog
@@ -1548,7 +1584,7 @@ class ProductApp:
             self.payment_method_var.value = method
             self.sale.payment_method = method
             # Re-calculate final price (though it shouldn't change without promos, it's safe to keep)
-            self.sale.apply_promotion() 
+            self.sale.calculate_total() 
             self.update_sale_display()
 
         if self.payment_method_var.value == "Dinheiro":
