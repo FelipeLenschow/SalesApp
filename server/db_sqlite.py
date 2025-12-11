@@ -23,7 +23,11 @@ class Database:
         CREATE TABLE IF NOT EXISTS shops (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
-            password TEXT
+            password TEXT,
+            device TEXT,
+            id_token TEXT,
+            pos_name TEXT,
+            user_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS products (
@@ -54,10 +58,7 @@ class Database:
             FOREIGN KEY(shop_id) REFERENCES shops(id)
         );
 
-        CREATE TABLE IF NOT EXISTS config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
+
         """
         try:
             with self.get_connection() as conn:
@@ -77,36 +78,23 @@ class Database:
                 if 'shop_id' not in sales_columns:
                     print("Migrating database: Adding shop_id column to sales table")
                     cursor.execute("ALTER TABLE sales ADD COLUMN shop_id INTEGER")
+
+                # Migration: Add config columns to shops
+                cursor.execute("PRAGMA table_info(shops)")
+                shops_columns = [info[1] for info in cursor.fetchall()]
+                for col in ['device', 'id_token', 'pos_name', 'user_id']:
+                    if col not in shops_columns:
+                        print(f"Migrating database: Adding {col} column to shops table")
+                        cursor.execute(f"ALTER TABLE shops ADD COLUMN {col} TEXT")
                     
         except sqlite3.Error as e:
             print(f"Error initializing database: {e}")
 
-    def set_config(self, key, value):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
-        except sqlite3.Error as e:
-            print(f"Error setting config: {e}")
 
-    def get_config(self, key):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
-                row = cursor.fetchone()
-                return row[0] if row else None
-        except sqlite3.Error as e:
-            print(f"Error getting config: {e}")
-            return None
 
-    def reset_config(self, key):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM config WHERE key = ?", (key,))
-        except sqlite3.Error as e:
-            print(f"Error resetting config: {e}")
+
+
+
 
     def get_shops(self):
         try:

@@ -123,6 +123,8 @@ class ProductApp:
         password_field = ft.TextField(label="Senha da Loja", password=True, can_reveal_password=True, width=280)
 
         def on_select(e):
+            e.control.disabled = True
+            e.control.update()
             self.shop = selected_shop.current.value
             password = password_field.value
             
@@ -130,6 +132,8 @@ class ProductApp:
                 page.snack_bar = ft.SnackBar(ft.Text("Selecione uma loja válida."), bgcolor="red")
                 page.snack_bar.open = True
                 page.update()
+                e.control.disabled = False
+                e.control.update()
                 return
 
             # Allow empty password if user intends to send it (server validates)
@@ -150,14 +154,14 @@ class ProductApp:
                 self.product_db.set_config('shop_password', password)
                 
                 page.snack_bar = ft.SnackBar(ft.Text("Dados sincronizados com sucesso!"), bgcolor="green")
-            except Exception as e:
+            except Exception as ex:
                 import requests
-                error_msg = f"Erro ao sincronizar: {e}"
+                error_msg = f"Erro ao sincronizar: {ex}"
                 
                 # Try to get detailed error message from server response
-                if isinstance(e, requests.exceptions.HTTPError):
+                if isinstance(ex, requests.exceptions.HTTPError):
                     try:
-                        if e.response is not None:
+                        if ex.response is not None:
                             detail = e.response.json().get('detail')
                             if detail:
                                 error_msg = f"{detail}"
@@ -183,6 +187,8 @@ class ProductApp:
                     page.dialog = error_dialog
                     error_dialog.open = True
                     page.update()
+                e.control.disabled = False
+                e.control.update()
                 return
             
             page.snack_bar.open = True
@@ -331,7 +337,7 @@ class ProductApp:
         )
 
     def build_main_window(self, page: ft.Page):
-        page.title = "Sorveteria Lolla"
+        page.title = "Sorveteria"
 
         # Fullscreen for desktop
         page.bgcolor = "#1a1a2e"
