@@ -19,6 +19,17 @@ class SyncClient:
             print(f"Error fetching shops: {e}")
             return []
 
+    def create_shop(self, new_name, new_password, source_name=None, source_password=None):
+        payload = {
+            "new_name": new_name,
+            "new_password": new_password,
+            "source_name": source_name,
+            "source_password": source_password
+        }
+        response = requests.post(f"{self.server_url}/create_shop", json=payload, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
     def sync(self, password=None, shop_name=None):
         """
         1. Get unsynced sales (For now we assume all sales that are NOT in specific range? 

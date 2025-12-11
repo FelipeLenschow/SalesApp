@@ -98,8 +98,8 @@ class ProductApp:
     def select_shop_window(self, page: ft.Page):
         page.bgcolor = "#8b0000"
         page.window.full_screen = False  # Windowed for selection
-        page.window.width = 400
-        page.window.height = 350
+        page.window.width = 600
+        page.window.height = 500
         page.window.center()
         page.vertical_alignment = ft.MainAxisAlignment.CENTER
         page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
@@ -189,12 +189,123 @@ class ProductApp:
             page.update()
             time.sleep(1)
 
+            page.snack_bar.open = True
+            page.update()
+            time.sleep(1)
+
             # Simulate saving selection and building main UI
             page.clean()
             self.pay = payment.Payment(self, self.shop)
             self.page = page
             self.build_main_window(page)
             self.new_sale()
+
+        def open_create_shop_dialog(e):
+            
+            new_shop_name = ft.TextField(label="Nome da Nova Loja")
+            new_shop_pass = ft.TextField(label="Senha da Nova Loja", password=True, can_reveal_password=True)
+            
+            copy_check = ft.Checkbox(label="Copiar dados de outra loja?", value=False)
+            source_shop_dropdown = ft.Dropdown(label="Loja de Origem", options=[ft.dropdown.Option(shop) for shop in shops if shop != "Erro ao conectar ao servidor" and shop != "Nenhuma loja cadastrada"], disabled=True, width=500) ## Shouldn't have this width, but its needed to make the dialog look good
+            source_shop_pass = ft.TextField(label="Senha da Loja de Origem", password=True, can_reveal_password=True, disabled=True)
+
+            def on_copy_check_change(e):
+                source_shop_dropdown.disabled = not copy_check.value
+                source_shop_pass.disabled = not copy_check.value
+                page.update()
+
+            copy_check.on_change = on_copy_check_change
+            
+            def confirm_create_shop(e):
+                if not new_shop_name.value:
+                    page.snack_bar = ft.SnackBar(ft.Text("Digite o nome da nova loja."), bgcolor="red")
+                    page.snack_bar.open = True
+                    page.update()
+                    return
+
+                source_name = None
+                source_pass = None
+                
+                if copy_check.value:
+                    if not source_shop_dropdown.value:
+                        page.snack_bar = ft.SnackBar(ft.Text("Selecione a loja de origem."), bgcolor="red")
+                        page.snack_bar.open = True
+                        page.update()
+                        return
+                    source_name = source_shop_dropdown.value
+                    source_pass = source_shop_pass.value # Can be empty if allowed
+
+                try:
+                    SERVER_URL = "http://localhost:8000"
+                    client = sync_client.SyncClient(SERVER_URL, self.product_db)
+                    
+                    page.snack_bar = ft.SnackBar(ft.Text("Criando loja..."), bgcolor="blue")
+                    page.snack_bar.open = True
+                    page.update()
+                    
+                    resp = client.create_shop(new_shop_name.value, new_shop_pass.value, source_name, source_pass)
+                    
+                    page.snack_bar = ft.SnackBar(ft.Text(f"Loja criada! {resp.get('message', '')}"), bgcolor="green")
+                    page.snack_bar.open = True
+                    
+                    # Close dialog
+                    if hasattr(page, 'close'):
+                         page.close(create_dialog)
+                    else:
+                         page.close_dialog()
+                    
+                    # Refresh shop list (hacky: just restart or re-fetch?) 
+                    # For a clean experience, we should re-fetch.
+                    # Re-fetch shops
+                    try:
+                        new_shops = client.get_shops()
+                        if new_shops:
+                            selected_shop.current.options = [ft.dropdown.Option(s['name']) for s in new_shops]
+                            # Update source dropdown too just in case
+                            source_shop_dropdown.options = [ft.dropdown.Option(s['name']) for s in new_shops]
+                            page.update()
+                    except:
+                        pass # Ignore refresh error
+                        
+                    page.update()
+
+                except Exception as ex:
+                    import requests
+                    err_msg = str(ex)
+                    if isinstance(ex, requests.exceptions.HTTPError):
+                        try:
+                            if ex.response is not None:
+                                detail = ex.response.json().get('detail')
+                                if detail:
+                                    err_msg = detail
+                        except:
+                            pass
+                    
+                    page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao criar loja: {err_msg}"), bgcolor="red")
+                    page.snack_bar.open = True
+                    page.update()
+
+            create_dialog = ft.AlertDialog(
+                title=ft.Text("Criar Nova Loja"),
+                content=ft.Column([
+                    new_shop_name,
+                    new_shop_pass,
+                    copy_check,
+                    source_shop_dropdown,
+                    source_shop_pass
+                ], tight=True, width=500),
+                actions=[
+                    ft.TextButton("Cancelar", on_click=lambda e: page.close(create_dialog) if hasattr(page, 'close') else page.close_dialog()),
+                    ft.ElevatedButton("Criar", on_click=confirm_create_shop)
+                ]
+            )
+            
+            try:
+                page.open(create_dialog)
+            except AttributeError:
+                page.dialog = create_dialog
+                create_dialog.open = True
+                page.update()
 
         page.add(
             ft.Column(
@@ -210,6 +321,8 @@ class ProductApp:
                     password_field,
                     ft.Container(height=20),
                     ft.ElevatedButton("Selecionar", on_click=on_select),
+                    ft.Container(height=10),
+                    ft.TextButton("Criar Nova Loja", on_click=open_create_shop_dialog)
                 ],
                 spacing=10,
                 alignment=ft.MainAxisAlignment.CENTER,

@@ -46,10 +46,12 @@ class Database:
 
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shop_id INTEGER,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
             final_price REAL,
             payment_method TEXT,
-            products_json TEXT
+            products_json TEXT,
+            FOREIGN KEY(shop_id) REFERENCES shops(id)
         );
 
         CREATE TABLE IF NOT EXISTS config (
@@ -64,10 +66,17 @@ class Database:
                 # Migration: Add password column if it doesn't exist
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA table_info(shops)")
-                columns = [info[1] for info in cursor.fetchall()]
-                if 'password' not in columns:
+                shops_columns = [info[1] for info in cursor.fetchall()]
+                if 'password' not in shops_columns:
                     print("Migrating database: Adding password column to shops table")
                     cursor.execute("ALTER TABLE shops ADD COLUMN password TEXT")
+
+                # Migration: Add shop_id column to sales if it doesn't exist
+                cursor.execute("PRAGMA table_info(sales)")
+                sales_columns = [info[1] for info in cursor.fetchall()]
+                if 'shop_id' not in sales_columns:
+                    print("Migrating database: Adding shop_id column to sales table")
+                    cursor.execute("ALTER TABLE sales ADD COLUMN shop_id INTEGER")
                     
         except sqlite3.Error as e:
             print(f"Error initializing database: {e}")
@@ -118,6 +127,52 @@ class Database:
                 self.shops = self.get_shops() # Refresh
             except sqlite3.Error as e:
                 print(f"Error adding shop: {e}")
+
+    def create_shop(self, shop_name, password):
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Insert new shop
+                cursor.execute("INSERT INTO shops (name, password) VALUES (?, ?)", (shop_name, password))
+            self.shops = self.get_shops() # Refresh cache
+            return True
+        except sqlite3.IntegrityError:
+            print(f"Shop {shop_name} already exists.")
+            return False
+        except sqlite3.Error as e:
+            print(f"Error creating shop: {e}")
+            raise e
+
+    def copy_shop_data(self, source_shop_name, target_shop_name):
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get IDs
+                cursor.execute("SELECT id FROM shops WHERE name = ?", (source_shop_name,))
+                source_row = cursor.fetchone()
+                cursor.execute("SELECT id FROM shops WHERE name = ?", (target_shop_name,))
+                target_row = cursor.fetchone()
+                
+                if not source_row or not target_row:
+                    raise ValueError("Source or Target shop not found")
+                
+                source_id = source_row[0]
+                target_id = target_row[0]
+                
+                # Copy prices: Select from source, insert into target
+                # We assume products table is global, so we just link existing products to new shop with same price
+                query = """
+                INSERT INTO product_prices (product_id, shop_id, price)
+                SELECT product_id, ?, price
+                FROM product_prices
+                WHERE shop_id = ?
+                """
+                cursor.execute(query, (target_id, source_id))
+                return cursor.rowcount
+        except sqlite3.Error as e:
+            print(f"Error copying shop data: {e}")
+            raise e
 
     def add_product(self, product_info, shop_name):
         self.ensure_shop_exists(shop_name)
