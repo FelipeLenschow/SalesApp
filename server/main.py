@@ -20,6 +20,7 @@ class SaleItem(BaseModel):
 class SyncPayload(BaseModel):
     sales: List[SaleItem]
     shop_name: Optional[str] = None
+    password: Optional[str] = None
 
 app = FastAPI()
 database = db.Database()
@@ -65,7 +66,40 @@ def sync_data(payload: SyncPayload):
                     count += 1
     except Exception as e:
         print(f"Error processing sales: {e}")
+    except Exception as e:
+        print(f"Error processing sales: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+    # 1.5 Verify Password logic
+    if payload.shop_name:
+        print(f"DEBUG: Validating password for shop='{payload.shop_name}'")
+        try:
+             with database.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT password FROM shops WHERE name = ?", (payload.shop_name,))
+                row = cursor.fetchone()
+                if row:
+                    stored_password = row[0]
+                    
+                    # Normalize passwords for comparison (treat None as empty string)
+                    db_pass = stored_password if stored_password is not None else ""
+                    input_pass = payload.password if payload.password is not None else ""
+                    
+                    print(f"DEBUG: DB Pass='{db_pass}' | Input Pass='{input_pass}'")
+
+                    # Verify strictly
+                    if db_pass != input_pass:
+                        print(f"Unauthorized sync attempt for {payload.shop_name}")
+                        raise HTTPException(status_code=401, detail="Senha incorreta.")
+                else:
+                    print(f"DEBUG: Shop '{payload.shop_name}' not found in DB during validation.")
+                    raise HTTPException(status_code=404, detail="Loja não encontrada para validação.")
+        except HTTPException:
+            raise
+        except Exception as e:
+             print(f"Error verifying password: {e}")
+             # fail safe open or closed? Closed.
+             raise HTTPException(status_code=500, detail=str(e))
     
     print(f"Inserted {count} new sales.")
 

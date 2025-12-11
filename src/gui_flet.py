@@ -99,7 +99,7 @@ class ProductApp:
         page.bgcolor = "#8b0000"
         page.window.full_screen = False  # Windowed for selection
         page.window.width = 400
-        page.window.height = 280
+        page.window.height = 350
         page.window.center()
         page.vertical_alignment = ft.MainAxisAlignment.CENTER
         page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
@@ -120,30 +120,70 @@ class ProductApp:
                 shops = ["Erro ao conectar ao servidor"]
 
         selected_shop = ft.Ref[ft.Dropdown]()
+        password_field = ft.TextField(label="Senha da Loja", password=True, can_reveal_password=True, width=280)
 
         def on_select(e):
             self.shop = selected_shop.current.value
+            password = password_field.value
+            
             if not self.shop or self.shop == "Erro ao conectar ao servidor":
                 page.snack_bar = ft.SnackBar(ft.Text("Selecione uma loja válida."), bgcolor="red")
                 page.snack_bar.open = True
                 page.update()
                 return
 
-            # Save to config
-            self.product_db.set_config('current_shop', self.shop)
-
-            # Initial Sync to populate DB
-            page.snack_bar = ft.SnackBar(ft.Text("Baixando dados da loja..."), bgcolor="blue")
+            # Allow empty password if user intends to send it (server validates)
+            
+            # Initial Sync to populate DB and Verify Password
+            page.snack_bar = ft.SnackBar(ft.Text("Autenticando e baixando dados..."), bgcolor="blue")
             page.snack_bar.open = True
             page.update()
             
             try:
                 SERVER_URL = "http://localhost:8000"
                 client = sync_client.SyncClient(SERVER_URL, self.product_db)
-                client.sync() # This pulls products
+                # Pass shop_name explicitly as it is not yet in config
+                client.sync(password=password, shop_name=self.shop)
+                
+                # If sync succeeds, save config
+                self.product_db.set_config('current_shop', self.shop)
+                self.product_db.set_config('shop_password', password)
+                
                 page.snack_bar = ft.SnackBar(ft.Text("Dados sincronizados com sucesso!"), bgcolor="green")
             except Exception as e:
-                page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao sincronizar: {e}"), bgcolor="orange")
+                import requests
+                error_msg = f"Erro ao sincronizar: {e}"
+                
+                # Try to get detailed error message from server response
+                if isinstance(e, requests.exceptions.HTTPError):
+                    try:
+                        if e.response is not None:
+                            detail = e.response.json().get('detail')
+                            if detail:
+                                error_msg = f"{detail}"
+                    except:
+                         pass
+
+                # Use AlertDialog for better visibility of errors
+                # Use AlertDialog for better visibility of errors
+                error_dialog = ft.AlertDialog(
+                    title=ft.Text("Erro na Sincronização"),
+                    content=ft.Text(error_msg),
+                    actions=[
+                    ],
+                )
+                # Define close action dynamically to reference the dialog instance
+                error_dialog.actions.append(
+                    ft.TextButton("OK", on_click=lambda e: page.close(error_dialog) if hasattr(page, 'close') else page.close_dialog())
+                )
+
+                try:
+                    page.open(error_dialog)
+                except AttributeError:
+                    page.dialog = error_dialog
+                    error_dialog.open = True
+                    page.update()
+                return
             
             page.snack_bar.open = True
             page.update()
@@ -167,6 +207,7 @@ class ProductApp:
                         width=280,
                         autofocus=True,
                     ),
+                    password_field,
                     ft.Container(height=20),
                     ft.ElevatedButton("Selecionar", on_click=on_select),
                 ],

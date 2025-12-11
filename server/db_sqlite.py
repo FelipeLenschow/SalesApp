@@ -22,7 +22,8 @@ class Database:
         create_tables_sql = """
         CREATE TABLE IF NOT EXISTS shops (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
+            name TEXT UNIQUE NOT NULL,
+            password TEXT
         );
 
         CREATE TABLE IF NOT EXISTS products (
@@ -59,6 +60,15 @@ class Database:
         try:
             with self.get_connection() as conn:
                 conn.executescript(create_tables_sql)
+                
+                # Migration: Add password column if it doesn't exist
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(shops)")
+                columns = [info[1] for info in cursor.fetchall()]
+                if 'password' not in columns:
+                    print("Migrating database: Adding password column to shops table")
+                    cursor.execute("ALTER TABLE shops ADD COLUMN password TEXT")
+                    
         except sqlite3.Error as e:
             print(f"Error initializing database: {e}")
 

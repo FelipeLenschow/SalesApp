@@ -19,11 +19,9 @@ class SyncClient:
             print(f"Error fetching shops: {e}")
             return []
 
-    def sync(self):
+    def sync(self, password=None, shop_name=None):
         """
         1. Get unsynced sales (For now we assume all sales that are NOT in specific range? 
-           Or we add a 'synced' flag to sales table? 
-           For this 'simple' version, we will just send ALL sales and let Server dedup.)
         2. Send to server.
         3. Receive products.
         4. Update local DB.
@@ -57,24 +55,30 @@ class SyncClient:
             return results
 
         # 2. Send to Server
-        try:
-            # Get current shop name to filter products
+        # 2. Send to Server
+        
+        # Get current shop name to filter products (if not passed explicitly)
+        if not shop_name:
             shop_name = self.db.get_config('current_shop')
-            
-            payload = {
-                "sales": sales_data,
-                "shop_name": shop_name
-            }
-            response = requests.post(f"{self.server_url}/sync", json=payload, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            results["uploaded"] = data.get("imported_sales", 0)
-            products_update = data.get("products_update", [])
-            
-        except Exception as e:
-            results["message"] = f"Connection error: {e}"
-            return results
+        
+        # Use provided password or fallback to stored one
+        if not password:
+            password = self.db.get_config('shop_password')
+        
+        payload = {
+            "sales": sales_data,
+            "shop_name": shop_name,
+            "password": password
+        }
+        
+        # NOTE: Exceptions here will propagate to the caller (GUI or auto-sync thread)
+        # This is intentional so that initial sync can fail on invalid password.
+        response = requests.post(f"{self.server_url}/sync", json=payload, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        results["uploaded"] = data.get("imported_sales", 0)
+        products_update = data.get("products_update", [])
 
         # 3. Update Local DB
         count = 0
