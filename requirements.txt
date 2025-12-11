@@ -1,0 +1,7 @@
+flet
+pandas
+openpyxl
+requests
+qrcode
+Pillow
+numpy
