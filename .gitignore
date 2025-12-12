@@ -1,4 +1,4 @@
 __pycache__/
 database.db
-# .aws/credentials
+.aws/credentials
 *.py[cod]
