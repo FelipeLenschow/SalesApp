@@ -55,7 +55,8 @@ class MainWindow:
             label="Método de pagamento",
             options=[ft.dropdown.Option(x) for x in [" ", "Débito", "Pix", "Dinheiro", "Crédito"]],
             width=300 * self.scale_factor,
-            on_change=self.app.on_payment_method_change
+            on_change=self.app.on_payment_method_change,
+            disabled=True
         )
 
         # 3. Buttons
@@ -265,7 +266,7 @@ class MainWindow:
         self.app.register_fab = ft.FloatingActionButton(
             icon=ft.Icons.ADD_BOX,
             bgcolor=ft.Colors.BLUE,
-            on_click=lambda e: self.app.edit_product(),
+            on_click=lambda e: self.app.editor.open(),
             tooltip="Cadastrar Produto",
         )
 

@@ -452,7 +452,7 @@ class ProductApp:
             if entered_barcode:
                 if entered_barcode == barcode:
                     self.page.close(dlg)
-                    self.edit_product(barcode=entered_barcode)
+                    self.editor.open(barcode=entered_barcode)
                 else:
                     self.page.close(dlg)
                     self.barcode_entry.value = entered_barcode
@@ -645,7 +645,8 @@ class ProductApp:
                     ft.dropdown.Option("Cartão")
                 ],
                 value=self.sale.payment_method,
-                on_change=lambda e: self.update_payment_method(method=e.control.value)
+                on_change=lambda e: self.update_payment_method(method=e.control.value),
+                disabled=True
             ),
             ft.TextField(
                 label="Valor Recebido",

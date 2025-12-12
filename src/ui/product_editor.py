@@ -67,40 +67,6 @@ class ProductEditor:
             self.app.is_editing = False
             self.page.update()
 
-        def confirm_discard():
-            def on_discard_confirm(e):
-                # Close confirm dialog and edit dialog
-                if hasattr(self.page, 'close'):
-                    self.page.close(discard_dialog) # Close bottom sheet
-                else:
-                    self.page.close_dialog() # Fallback
-                close() # Close main dialog
-            
-            def on_discard_cancel(e):
-                if hasattr(self.page, 'close'):
-                    self.page.close(discard_dialog)
-                else:
-                    self.page.close_dialog()
-            
-            discard_dialog = ft.BottomSheet(
-                ft.Container(
-                    ft.Column([
-                        ft.Text("Tem certeza que deseja descartar as alterações?", size=18, weight=ft.FontWeight.BOLD),
-                         ft.Row([
-                            ft.TextButton("Continuar Editando", on_click=on_discard_cancel),
-                            ft.ElevatedButton("Descartar", on_click=on_discard_confirm, bgcolor=ft.Colors.RED, color=ft.Colors.WHITE),
-                        ], alignment=ft.MainAxisAlignment.END)
-                    ]),
-                    padding=20
-                ),
-                open=True
-                # modal=True # BottomSheet is usually modal-ish
-            )
-            # Add to overlay to mimic show behaviour
-            self.page.overlay.append(discard_dialog)
-            self.page.update()
-
-
         def handle_dismiss(e):
             nonlocal explicit_close
             
@@ -181,12 +147,6 @@ class ProductEditor:
             except Exception as ex:
                 self.app.show_error(f"Erro ao salvar: {str(ex)}")
 
-        def cancel_click(e):
-            if check_dirty():
-                confirm_discard()
-            else:
-                close()
-
         # Dialog Content
         content = ft.Column(
             [
@@ -203,7 +163,7 @@ class ProductEditor:
             title=ft.Text(current_data['titulo_da_aba']),
             content=content,
             actions=[
-                ft.TextButton("Cancelar", on_click=cancel_click),
+                ft.TextButton("Descartar", on_click=close, style=ft.ButtonStyle(color=ft.Colors.RED)),
                 ft.ElevatedButton("Salvar", on_click=save_changes),
             ],
             on_dismiss=handle_dismiss,
