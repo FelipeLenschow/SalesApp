@@ -326,6 +326,10 @@ class MainWindow:
     def hide_dropdown_in_100ms(self):
         def hide():
             time.sleep(0.1)
+            # Check if a scan happened recently (within 500ms)
+            if time.time() - self.app.last_barcode_scan < 0.5:
+                return
+            
             self.app.barcode_dropdown.visible = False
             self.app.barcode_stack.height = 66
             self.page.update()

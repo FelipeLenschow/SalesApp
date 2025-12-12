@@ -43,9 +43,9 @@ class ProductApp:
 
         self.manual_add_count = 0
         self.manual_add_list = []
-        
         # State flags
         self.is_editing = False # Flag to track if edit dialog is open
+        self.last_barcode_scan = 0 # Timestamp of last barcode scan to prevent instant closing
 
         # Keyboard event handling
         self.page.on_keyboard_event = self.on_key_event
@@ -194,12 +194,15 @@ class ProductApp:
             self.ui.hide_dropdown()
 
     def handle_barcode(self, event=None):
+        # Update timestamp to prevent on_blur from closing logic
+        self.last_barcode_scan = time.time()
+        
         barcode = self.barcode_entry.value.strip()
 
         if not barcode:
             return
 
-        self.barcode_entry.value = ""
+        # Do NOT clear value here immediately
 
         # Handle manual value entry
         if ',' in barcode or '.' in barcode:
@@ -216,6 +219,10 @@ class ProductApp:
                 self.manual_add_list.append(product)
                 self.sale.add_product(product)
                 self.update_sale_display(focus_on_=product)
+                
+                # Clear value only after successful manual add
+                self.barcode_entry.value = ""
+                self.page.update()
                 return
             except ValueError:
                 pass
@@ -231,26 +238,43 @@ class ProductApp:
                     product = matching_products.iloc[0]
                     self.sale.add_product(product)
                     self.update_sale_display(focus_on_=product)
+                    
+                    # Clear value after successful single product add
+                    self.barcode_entry.value = ""
                 else:
                     # Varios produtos encontrados para o mesmo codigo
+                    # DO NOT CLEAR VALUE HERE - keep it so dropdown stays open
+                    self.search_results.controls.clear()
                     for _, product in matching_products.iterrows():
                         self.search_results.controls.append(
                             ft.ListTile(
-                                title=ft.Text(product[('Todas', 'Sabor')]),
-                                subtitle=ft.Text(f"R${product[(self.shop, 'Preco')]}"),
+                                leading=ft.Icon(ft.Icons.SEARCH),
+                                title=ft.Text(
+                                    f"{product[('Todas', 'Categoria')]} "
+                                    f"({product[('Todas', 'Sabor')]})",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                subtitle=ft.Text(
+                                    f"R${product[(self.shop, 'Preco')]:.2f} | "
+                                    f"Cod: {product[('Todas', 'Codigo de Barras')]}"
+                                ),
                                 on_click=lambda e, p=product: self.select_product(p),
+                                text_color=ft.Colors.BLACK  # Fix: Make text visible
                             )
                         )
                     self.ui.show_dropdown()
             else:
                 # Nenhum produto encontrado
+                # Clear value before error dialog? Or keep it?
+                # Original logic cleared it. Let's clear it to allow re-scan cleanly or manual edit in dialog.
+                self.barcode_entry.value = ""
                 self.confirm_read_error(barcode=barcode)
 
             self.page.update()
 
     def on_key_event(self, e: ft.KeyboardEvent):
         if e.key == "Enter":
-            self.handle_barcode()
+            pass # Handled by on_submit
         elif e.key == "F5":
             self.update_payment_method(method="Débito")
         elif e.key == "F6":
