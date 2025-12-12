@@ -22,28 +22,28 @@ class Sale:
         return self.final_price
 
     def add_product(self, product):
-        excel_row = product[('Metadata', 'Excel Row')]
-        if excel_row not in self.current_sale or (type(excel_row) == str and excel_row.startswith('Manual')):
-            self.current_sale[excel_row] = {
+        product_id = product[('Metadata', 'Product ID')]
+        if product_id not in self.current_sale or (type(product_id) == str and product_id.startswith('Manual')):
+            self.current_sale[product_id] = {
                 'categoria': product[('Todas', 'Categoria')],
                 'sabor': product[('Todas', 'Sabor')],
                 'preco': product[(self.shop, 'Preco')],
                 'quantidade': 1,
-                'indexExcel': excel_row
+                'product_id': product_id
             }
         else:
-            self.current_sale[excel_row]['quantidade'] += 1
+            self.current_sale[product_id]['quantidade'] += 1
 
-    def remove_product(self, excel_row):
-        if excel_row in self.current_sale:
-            del self.current_sale[excel_row]
+    def remove_product(self, product_id):
+        if product_id in self.current_sale:
+            del self.current_sale[product_id]
 
-    def update_quantity(self, excel_row, quantity):
-        if excel_row in self.current_sale:
-            self.current_sale[excel_row]['quantidade'] = max(quantity, 0)
-            if self.current_sale[excel_row]['quantidade'] == 0:
-                self.remove_product(excel_row)
+    def update_quantity(self, product_id, quantity):
+        if product_id in self.current_sale:
+            self.current_sale[product_id]['quantidade'] = max(quantity, 0)
+            if self.current_sale[product_id]['quantidade'] == 0:
+                self.remove_product(product_id)
 
-    def update_price(self, excel_row, new_price):
-        if excel_row in self.current_sale:
-            self.current_sale[excel_row]['preco'] = new_price
+    def update_price(self, product_id, new_price):
+        if product_id in self.current_sale:
+            self.current_sale[product_id]['preco'] = new_price

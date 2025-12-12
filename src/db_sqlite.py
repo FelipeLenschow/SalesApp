@@ -154,7 +154,7 @@ class Database:
                         ('Todas', 'Categoria'): row[1],
                         ('Todas', 'Sabor'): row[2],
                         (shop_name, 'Preco'): row[3],
-                        ('Metadata', 'Excel Row'): row[4] # Use Product ID as ID
+                        ('Metadata', 'Product ID'): row[4] # Use Product ID as ID
                     })
                 return pd.DataFrame(data)
         except sqlite3.Error as e:
@@ -187,7 +187,7 @@ class Database:
                         ('Todas', 'Categoria'): row[1],
                         ('Todas', 'Sabor'): row[2],
                         (shop_name, 'Preco'): row[3],
-                        ('Metadata', 'Excel Row'): product_id
+                        ('Metadata', 'Product ID'): product_id
                     }
                 else:
                     print(f"DEBUG: Product not found in DB for id={product_id} shop={shop_name}")
@@ -223,7 +223,7 @@ class Database:
                         ('Todas', 'Categoria'): row[1],
                         ('Todas', 'Sabor'): row[2],
                         (shop_name, 'Preco'): row[3],
-                         ('Metadata', 'Excel Row'): row[4]
+                         ('Metadata', 'Product ID'): row[4]
                     })
                 return pd.DataFrame(data)
         except sqlite3.Error as e:

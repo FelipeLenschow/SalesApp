@@ -1,5 +1,5 @@
 import flet as ft
-from src.gui_flet import ProductApp
+from src.ui.gui import ProductApp
 
 def main(page: ft.Page):
     app = ProductApp(page)
