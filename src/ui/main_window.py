@@ -8,11 +8,23 @@ class MainWindow:
         self.app = app
         self.page = page
         self.scale_factor = 1.0
+        self.custom_restore_btn = None
+        self.custom_close_btn = None
+
+    def update_custom_buttons_visibility(self):
+        if self.custom_restore_btn and self.custom_close_btn:
+            is_full_screen = self.page.window.full_screen
+            self.custom_restore_btn.visible = is_full_screen
+            self.custom_close_btn.visible = is_full_screen
+            
+            if self.custom_restore_btn.page:
+                self.custom_restore_btn.update()
+            if self.custom_close_btn.page:
+                self.custom_close_btn.update()
 
     def build(self):
         self.page.title = "Sorveteria"
         self.page.bgcolor = "#1a1a2e"
-        self.page.window.full_screen = True
 
         screen_width = self.page.window.width
         screen_height = self.page.window.height
@@ -109,6 +121,33 @@ class MainWindow:
         )
 
         # 5. Top Bar
+
+        self.custom_restore_btn = ft.IconButton(
+            icon=ft.Icons.FULLSCREEN_EXIT, 
+            icon_color="white", 
+            tooltip="Sair da Tela Cheia", 
+            visible=False, # Managed by update_custom_buttons
+        )
+
+        self.custom_close_btn = ft.IconButton(
+            icon="close", 
+            icon_color="red", 
+            tooltip="Fechar", 
+            on_click=close_app,
+            visible=False, # Managed by update_custom_buttons
+        )
+
+        def toggle_full_screen(e):
+            self.page.window.full_screen = False
+            self.page.window.maximized = False
+            self.update_custom_buttons_visibility()
+            self.page.update()
+
+        self.custom_restore_btn.on_click = toggle_full_screen
+        
+        # Initialize visibility
+        self.update_custom_buttons_visibility()
+
         top_bar = ft.Container(
             content=ft.Row(
                 controls=[
@@ -120,8 +159,8 @@ class MainWindow:
                         spacing=-5
                     ),
                     ft.Container(expand=True),
-                    ft.IconButton(icon="remove", icon_color="white", tooltip="Minimizar", on_click=minimize_app),
-                    ft.IconButton(icon="close", icon_color="red", tooltip="Fechar", on_click=close_app),
+                    self.custom_restore_btn,
+                    self.custom_close_btn,
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.START,

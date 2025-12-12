@@ -50,6 +50,7 @@ class ProductApp:
         # Keyboard event handling
         self.page.on_keyboard_event = self.on_key_event
         self.page.on_resized = self._perform_resize
+        self.page.on_window_event = self.on_window_event
         self._resize_timer = None
 
         # Initialize UI
@@ -59,6 +60,8 @@ class ProductApp:
              self.pay = payment.Payment(self, self.shop)
              self.ui = src.ui.main_window.MainWindow(self, page)
              self.ui.build()
+             self.page.window.full_screen = True
+             self.page.update()
              self.editor = src.ui.product_editor.ProductEditor(self)
              self.new_sale()
         else:
@@ -71,6 +74,15 @@ class ProductApp:
         threading.Thread(target=self.sync_manager.start_auto_sync, daemon=True).start()
 
     def _perform_resize(self, e=None):
+        # Check if window was maximized by OS and switch to full screen
+        if self.page.window.maximized:
+            self.page.window.maximized = False
+            self.page.window.full_screen = True
+            if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
+                self.ui.update_custom_buttons_visibility()
+            self.page.update()
+            return
+
         # Only resize if we are in the main app (shop selected)
         if not getattr(self, 'shop', None):
             return
@@ -84,7 +96,7 @@ class ProductApp:
             screen_height = 1080
 
         # Update scale factor
-        self.scale_factor = 0.8 * min(screen_width / BASE_WIDTH, screen_height / BASE_HEIGHT)
+        self.scale_factor = 0.6 * min(screen_width / BASE_WIDTH, screen_height / BASE_HEIGHT)
 
         # Rebuild UI
         self.page.clean()
@@ -98,6 +110,14 @@ class ProductApp:
              self.update_sale_display()
         
         self.page.update()
+
+    def on_window_event(self, e):
+        if e.data == "maximize":
+            self.page.window.maximized = False
+            self.page.window.full_screen = True
+            if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
+                self.ui.update_custom_buttons_visibility()
+            self.page.update()
 
     def show_error(self, message):
         print(f"Showing message: {message}")

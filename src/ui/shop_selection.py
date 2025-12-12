@@ -24,12 +24,12 @@ class ShopSelection:
         # If no local shops, try to fetch from server
         if not shops:
             try:
-                # SERVER URL - HARDCODED FOR NOW or use config default
-                SERVER_URL = "http://localhost:8000" 
-                client = sync_client.SyncClient(SERVER_URL, self.app.product_db)
+                # SERVER_URL is ignored by new SyncClient
+                client = sync_client.SyncClient(self.app.product_db)
                 server_shops = client.get_shops()
                 if server_shops:
-                    shops = [s['name'] for s in server_shops]
+                    # server_shops is already a list of strings ['ShopA', 'ShopB']
+                    shops = server_shops
             except Exception as e:
                 print(f"Failed to fetch shops from server: {e}")
                 shops = ["Erro ao conectar ao servidor"]
@@ -59,8 +59,8 @@ class ShopSelection:
             self.page.update()
             
             try:
-                SERVER_URL = "http://localhost:8000"
-                client = sync_client.SyncClient(SERVER_URL, self.app.product_db)
+                # SERVER_URL ignored
+                client = sync_client.SyncClient(self.app.product_db)
                 # Pass shop_name explicitly as it is not yet in config
                 client.sync(password=password, shop_name=shop_name)
                 
@@ -70,19 +70,8 @@ class ShopSelection:
                 
                 self.page.snack_bar = ft.SnackBar(ft.Text("Dados sincronizados com sucesso!"), bgcolor="green")
             except Exception as ex:
-                import requests
                 error_msg = f"Erro ao sincronizar: {ex}"
                 
-                # Try to get detailed error message from server response
-                if isinstance(ex, requests.exceptions.HTTPError):
-                    try:
-                        if ex.response is not None:
-                            detail = ex.response.json().get('detail')
-                            if detail:
-                                error_msg = f"{detail}"
-                    except:
-                         pass
-
                 # Use AlertDialog for better visibility of errors
                 error_dialog = ft.AlertDialog(
                     title=ft.Text("Erro na Sincronização"),
@@ -159,9 +148,8 @@ class ShopSelection:
                     source_pass = source_shop_pass.value # Can be empty if allowed
 
                 try:
-                    SERVER_URL = "http://localhost:8000"
                     # Pass app's database
-                    client = sync_client.SyncClient(SERVER_URL, self.app.product_db)
+                    client = sync_client.SyncClient(self.app.product_db)
                     
                     self.page.snack_bar = ft.SnackBar(ft.Text("Criando loja..."), bgcolor="blue")
                     self.page.snack_bar.open = True
@@ -182,7 +170,7 @@ class ShopSelection:
                     try:
                         new_shops = client.get_shops()
                         if new_shops:
-                            shops_names = [s['name'] for s in new_shops]
+                            shops_names = new_shops
                             selected_shop.current.options = [ft.dropdown.Option(s) for s in shops_names]
                             # Update source dropdown too just in case
                             source_shop_dropdown.options = [ft.dropdown.Option(s) for s in shops_names]
@@ -193,16 +181,7 @@ class ShopSelection:
                     self.page.update()
 
                 except Exception as ex:
-                    import requests
                     err_msg = str(ex)
-                    if isinstance(ex, requests.exceptions.HTTPError):
-                        try:
-                            if ex.response is not None:
-                                detail = ex.response.json().get('detail')
-                                if detail:
-                                    err_msg = detail
-                        except:
-                            pass
                     
                     self.page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao criar loja: {err_msg}"), bgcolor="red")
                     self.page.snack_bar.open = True
