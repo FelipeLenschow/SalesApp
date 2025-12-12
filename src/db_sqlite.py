@@ -298,3 +298,28 @@ class Database:
         # It needs 'shops'.
         return self # partial mock
 
+
+    def get_all_products_local(self):
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                query = """
+                SELECT p.barcode, p.category, p.flavor, pp.price
+                FROM products p
+                JOIN product_prices pp ON p.id = pp.product_id
+                """
+                cursor.execute(query)
+                rows = cursor.fetchall()
+                products = []
+                for row in rows:
+                    products.append({
+                        'barcode': row[0],
+                        'categoria': row[1],
+                        'sabor': row[2],
+                        'preco': row[3]
+                    })
+                return products
+        except sqlite3.Error as e:
+            print(f"Error fetching all products: {e}")
+            return []
+

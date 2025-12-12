@@ -21,7 +21,7 @@ class Database:
         # Check for local credentials file in project root
         local_creds = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.aws', 'credentials')
         if os.path.exists(local_creds):
-            print(f"Using local credentials file: {local_creds}")
+            # print(f"Using local credentials file: {local_creds}")
             os.environ['AWS_SHARED_CREDENTIALS_FILE'] = local_creds
 
         # Initialize DynamoDB resource
@@ -29,7 +29,7 @@ class Database:
         self.dynamodb = boto3.resource('dynamodb', region_name=region_name)
         
         # Table References
-        self.shops_table = self.dynamodb.Table('SalesApp_Shops')
+        self.public_shops_table = self.dynamodb.Table('SalesApp_PublicShops')
         self.products_table = self.dynamodb.Table('SalesApp_Products')
         self.sales_table = self.dynamodb.Table('SalesApp_Sales')
         
@@ -38,24 +38,24 @@ class Database:
         
         # Cache for shops to mimic SQLite's quick lookup if needed, 
         # though DynamoDB is fast enough to query directly usually.
-        self.shops = self.get_shops() # Keep this property for compatibility
+        self.shops = [] # Lazy load
 
     def init_tables(self):
         """Check if tables exist, create them if not."""
         try:
-            # SHOPS TABLE
+            # PUBLIC SHOPS TABLE
             try:
-                self.shops_table.load()
+                self.public_shops_table.load()
             except ClientError as e:
                 if e.response['Error']['Code'] == 'ResourceNotFoundException':
-                    print("Creating SalesApp_Shops table...")
-                    self.shops_table = self.dynamodb.create_table(
-                        TableName='SalesApp_Shops',
+                    print("Creating SalesApp_PublicShops table...")
+                    self.public_shops_table = self.dynamodb.create_table(
+                        TableName='SalesApp_PublicShops',
                         KeySchema=[{'AttributeName': 'name', 'KeyType': 'HASH'}], # Partition Key
                         AttributeDefinitions=[{'AttributeName': 'name', 'AttributeType': 'S'}],
                         BillingMode='PAY_PER_REQUEST'
                     )
-                    self.shops_table.wait_until_exists()
+                    self.public_shops_table.wait_until_exists()
             
             # PRODUCTS TABLE
             # Strategy: Partition Key = barcode, Sort Key = shop_name
@@ -107,48 +107,16 @@ class Database:
 
     def get_shops(self):
         try:
-            response = self.shops_table.scan()
-            return [item['name'] for item in response.get('Items', [])]
+            # Scan Public Shops Table
+            response = self.public_shops_table.scan()
+            items = response.get('Items', [])
+            result = [item['name'] for item in items]
+            self.shops = result
+            return result
         except ClientError as e:
             print(f"Error fetching shops: {e}")
             return []
 
-    def ensure_shop_exists(self, shop_name):
-        """
-        DynamoDB doesn't need explicit 'ensure' for inserts usually, 
-        but we might want to register the shop if it's new.
-        """
-        if shop_name not in self.shops:
-            self.create_shop(shop_name, password="")
-
-    def create_shop(self, shop_name, password):
-        try:
-            # ConditionExpression to ensure uniqueness
-            self.shops_table.put_item(
-                Item={
-                    'name': shop_name,
-                    'password': password
-                },
-                ConditionExpression='attribute_not_exists(#n)',
-                ExpressionAttributeNames={'#n': 'name'}
-            )
-            self.shops = self.get_shops() # Refresh cache
-            return True
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-                print(f"Shop {shop_name} already exists.")
-                return False
-            print(f"Error creating shop: {e}")
-            raise e
-
-    def get_shop_details(self, shop_name):
-        """Helper to get full shop details including password."""
-        try:
-            response = self.shops_table.get_item(Key={'name': shop_name})
-            return response.get('Item')
-        except ClientError as e:
-            print(f"Error getting shop details: {e}")
-            return None
 
     # --- Product Management ---
 

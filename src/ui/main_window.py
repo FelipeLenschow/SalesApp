@@ -7,7 +7,6 @@ class MainWindow:
     def __init__(self, app, page: ft.Page):
         self.app = app
         self.page = page
-        self.scale_factor = 1.0
         self.custom_restore_btn = None
         self.custom_close_btn = None
 
@@ -26,21 +25,6 @@ class MainWindow:
         self.page.title = "Sorveteria"
         self.page.bgcolor = "#1a1a2e"
 
-        screen_width = self.page.window.width
-        screen_height = self.page.window.height
-
-        # Fix for transition from small window
-        if screen_width < 1000:
-            screen_width = 1920
-            screen_height = 1080
-
-        # Constants for UI scaling (assumed from original file)
-        BASE_WIDTH = 1920
-        BASE_HEIGHT = 1080
-        self.scale_factor = 0.6 * min(screen_width / BASE_WIDTH, screen_height / BASE_HEIGHT)
-        
-        # Make scale_factor available to app if needed, or just use it locally
-        self.app.scale_factor = self.scale_factor
 
         def close_app(e):
             self.page.window.close()
@@ -52,21 +36,21 @@ class MainWindow:
         # --- UI Elements ---
         
         # 1. Labels and Text
-        self.app.final_price_label = ft.Text("R$ 0.00", size=100 * self.scale_factor, weight=ft.FontWeight.BOLD, color="white")
+        self.app.final_price_label = ft.Text("R$ 0.00", size=60, weight=ft.FontWeight.BOLD, color="white")
         self.app.status_text = ft.Text("", color="#ff8888")
         self.app.troco_text = ft.Text("", color="white")
 
         # 2. Controls
         self.app.valor_pago_entry = ft.TextField(
             label="Valor pago",
-            width=300 * self.scale_factor,
+            width=300 * 0.6,
             on_change=lambda e: self.app.calcular_troco(),
         )
 
         self.app.payment_method_var = ft.Dropdown(
             label="Método de pagamento",
             options=[ft.dropdown.Option(x) for x in [" ", "Débito", "Pix", "Dinheiro", "Crédito"]],
-            width=300 * self.scale_factor,
+            width=180,
             on_change=self.app.on_payment_method_change,
             disabled=True
         )
@@ -81,13 +65,13 @@ class MainWindow:
                 ft.ControlState.DISABLED: ft.Colors.WHITE54,
                 ft.ControlState.DEFAULT: ft.Colors.WHITE,
             },
-            text_style=ft.TextStyle(size=30 * self.scale_factor, weight=ft.FontWeight.BOLD)
+            text_style=ft.TextStyle(size=18, weight=ft.FontWeight.BOLD)
         )
-        button_heigth = 60 * self.scale_factor
+        button_heigth = 36
 
         self.app.cobrar_btn = ft.ElevatedButton(
             "Cobrar",
-            width=200 * self.scale_factor,
+            width=200 * 0.6,
             height=button_heigth,
             on_click=lambda e: self.app.cobrar(),
             style=button_style,
@@ -97,7 +81,7 @@ class MainWindow:
         finalize_btn = ft.ElevatedButton(
             "Finalizar",
             height=button_heigth,
-            width=200 * self.scale_factor,
+            width=120,
             on_click=lambda e: self.app.finalize_sale(self.app.sale.id) if self.app.sale else None,
             style=button_style
         )
@@ -110,14 +94,14 @@ class MainWindow:
                     ft.Row([self.app.valor_pago_entry], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([self.app.troco_text], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([finalize_btn], alignment=ft.MainAxisAlignment.CENTER),
-                    ft.Container(height=100 * self.scale_factor),
+                    ft.Container(height=60),
                     ft.Row([self.app.payment_method_var], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([self.app.cobrar_btn], alignment=ft.MainAxisAlignment.CENTER),
                 ],
-                spacing=10 * self.scale_factor,
+                spacing=6,
                 alignment=ft.MainAxisAlignment.CENTER,
             ),
-            padding=ft.padding.only(right=10 * self.scale_factor),
+            padding=ft.padding.only(right=6),
         )
 
         # 5. Top Bar
@@ -153,10 +137,10 @@ class MainWindow:
                 controls=[
                     ft.Column(
                         [
-                            ft.Text("Sorveteria", size=60 * self.scale_factor, weight=ft.FontWeight.BOLD, color="white"),
-                            ft.Text(f"   {self.app.shop}", size=40 * self.scale_factor, color="white"),
+                            ft.Text("Sorveteria", size=36, weight=ft.FontWeight.BOLD, color="white"),
+                            ft.Text(f"   {self.app.shop}", size=24, color="white"),
                         ],
-                        spacing=-5
+                        spacing=-3
                     ),
                     ft.Container(expand=True),
                     self.custom_restore_btn,
@@ -165,28 +149,28 @@ class MainWindow:
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            padding=ft.padding.only(left=20 * self.scale_factor, right=20 * self.scale_factor, top=10 * self.scale_factor)
+            padding=ft.padding.only(left=12, right=12, top=6)
         )
 
         # 6. Search Results & Dropdown
         self.app.search_results = ft.Column(
             scroll=ft.ScrollMode.ALWAYS,
-            spacing=5,
+            spacing=3,
             visible=True,
         )
 
         self.app.barcode_dropdown = ft.Container(
             content=self.app.search_results,
             bgcolor=ft.Colors.WHITE,
-            padding=10,
+            padding=6,
             border=ft.border.all(1, ft.Colors.GREY_300),
-            border_radius=5,
+            border_radius=3,
             visible=False,
-            top=100 * self.scale_factor,
+            top=60,
             left=0,
-            width=800 * self.scale_factor,
-            height=400 * self.scale_factor,
-            shadow=ft.BoxShadow(blur_radius=20, color=ft.Colors.BLACK54),
+            width=480,
+            height=240,
+            shadow=ft.BoxShadow(blur_radius=12, color=ft.Colors.BLACK54),
         )
 
         # 7. Barcode Entry
@@ -196,11 +180,11 @@ class MainWindow:
             label="Código de barras",
             on_submit=lambda e: self.app.handle_barcode(),
             on_change=lambda e: self.app.handle_search(),
-            width=800 * self.scale_factor,
+            width=480,
             keyboard_type=ft.KeyboardType.NUMBER,
             on_focus=lambda e: self.show_dropdown(),
             on_blur=lambda e: self.hide_dropdown_in_100ms(),
-            height=100 * self.scale_factor,
+            height=60,
         )
 
         self.app.barcode_stack = ft.Stack(
@@ -208,21 +192,21 @@ class MainWindow:
                 self.app.barcode_entry,
                 self.app.barcode_dropdown,
             ],
-            height=110 * self.scale_factor,
+            height=66,
             clip_behavior=ft.ClipBehavior.NONE
         )
 
         # 8. Sales Columns
         self.app.widgets_vendas = ft.Column(
             controls=[],
-            width=1200 * self.scale_factor,
-            spacing=10 * self.scale_factor
+            width=720,
+            spacing=6
         )
 
         self.app.stored_sales_row = ft.Row(
             controls=[],
             wrap=True,
-            spacing=20 * self.scale_factor,
+            spacing=12,
             scroll=ft.ScrollMode.ALWAYS,
             alignment=ft.MainAxisAlignment.START,
         )
@@ -236,10 +220,10 @@ class MainWindow:
                         ft.Stack([
                             ft.Row(
                                 [
-                                    ft.Container(height=50 * self.scale_factor),
+                                    ft.Container(height=30),
                                     ft.Column(
                                         [
-                                            ft.Container(height=350 * self.scale_factor),
+                                            ft.Container(height=210),
                                             self.app.widgets_vendas,
                                         ],
                                         expand=True,
@@ -247,7 +231,7 @@ class MainWindow:
                                     ),
                                     ft.Column(
                                         [self.app.status_text, payment_area],
-                                        width=450 * self.scale_factor,
+                                        width=270,
                                         alignment=ft.MainAxisAlignment.START,
                                     ),
                                 ],
@@ -265,18 +249,18 @@ class MainWindow:
                             content=ft.IconButton(
                                 icon=ft.Icons.ADD,
                                 icon_color="white",
-                                icon_size=40 * self.scale_factor,
+                                icon_size=24,
                                 tooltip="Nova Venda",
                                 on_click=lambda e: self.app.new_sale()
                             ),
-                            padding=ft.padding.only(left=10 * self.scale_factor, right=10 * self.scale_factor),
+                            padding=ft.padding.only(left=6, right=6),
                         ),
                         ft.Container(
                             content=self.app.stored_sales_row,
-                            height=250 * self.scale_factor,
+                            height=150,
                             expand=True,
                             padding=ft.padding.only(bottom=0),
-                            border_radius=10 * self.scale_factor,
+                            border_radius=6,
                             alignment=ft.alignment.bottom_left,
                         )
                     ],
@@ -315,7 +299,7 @@ class MainWindow:
                 self.app.history_fab,
                 self.app.sync_fab
             ],
-            spacing=10,
+            spacing=6,
             alignment=ft.MainAxisAlignment.END,
         )
 
@@ -327,7 +311,7 @@ class MainWindow:
         # We access controls via app because we assigned them to app
         if self.app.search_results.controls:
             self.app.barcode_dropdown.visible = True
-            self.app.barcode_stack.height = 500 * self.scale_factor
+            self.app.barcode_stack.height = 300
             self.app.barcode_stack.update()
             self.app.barcode_dropdown.update()
         else:
@@ -335,7 +319,7 @@ class MainWindow:
 
     def hide_dropdown(self):
         self.app.barcode_dropdown.visible = False
-        self.app.barcode_stack.height = 110 * self.scale_factor
+        self.app.barcode_stack.height = 66
         self.app.barcode_stack.update()
         self.page.update()
 
@@ -343,7 +327,7 @@ class MainWindow:
         def hide():
             time.sleep(0.1)
             self.app.barcode_dropdown.visible = False
-            self.app.barcode_stack.height = 110 * self.scale_factor
+            self.app.barcode_stack.height = 66
             self.page.update()
 
         threading.Thread(target=hide).start()

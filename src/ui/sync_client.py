@@ -26,30 +26,7 @@ class SyncClient:
             print(f"Error fetching shops: {e}")
             return []
 
-    def create_shop(self, new_name, new_password, source_name=None, source_password=None):
-        if not self.cloud: 
-            return {"status": "error", "message": "No AWS Connection"}
-        
-        # 1. Validation (if source)
-        if source_name:
-            source_details = self.cloud.get_shop_details(source_name)
-            if not source_details:
-                raise Exception("Loja de origem não encontrada.")
-            if source_details.get('password') != source_password:
-                raise Exception("Senha da loja de origem incorreta.")
-        
-        # 2. Create
-        if not self.cloud.create_shop(new_name, new_password):
-            raise Exception("Loja já existe.")
-        
-        # 3. Copy
-        copied = 0
-        if source_name:
-            copied = self.cloud.copy_shop_data(source_name, new_name)
-
-        return {"status": "success", "message": "Shop created", "copied_items": copied}
-
-    def sync(self, password=None, shop_name=None):
+    def sync(self, shop_name=None):
         if not self.cloud:
             return {"message": "Sem conexão AWS (Credenciais ausentes?)"}
 
@@ -73,19 +50,10 @@ class SyncClient:
             results["message"] = f"Error reading local sales: {e}"
             return results
 
-        # 2. Upload to Cloud
+        # 2. Upload Sales (Always)
         if not shop_name:
             shop_name = self.db.get_config('current_shop')
-        if not password:
-            password = self.db.get_config('shop_password')
         
-        # Authenticate
-        shop_details = self.cloud.get_shop_details(shop_name)
-        if not shop_details or shop_details.get('password') != password:
-            results["message"] = "Autenticação falhou."
-            raise Exception("Senha incorreta ou loja não encontrada.")
-
-        # Upload
         count_up = 0
         for sale in sales_data:
             try:
@@ -96,35 +64,86 @@ class SyncClient:
         
         results["uploaded"] = count_up
 
-        # 3. Download Products
-        products_update = self.cloud.get_all_products(shop_name) # Filter by shop
-        
-        # Update Local DB
-        count_down = 0
+        # 3. Product Sync (Bidirectional Smart Sync)
         try:
-            for p in products_update:
+            # Fetch all from both sources
+            aws_products = self.cloud.get_all_products(shop_name)
+            local_products = self.db.get_all_products_local()
+            
+            # Index by barcode for O(1) access
+            aws_map = {p['barcode']: p for p in aws_products}
+            local_map = {p['barcode']: p for p in local_products}
+            
+            # A) Upload Check: Local -> Cloud
+            # We assume Local is the 'editor' source of truth for conflicts in this version.
+            products_to_upload = []
+            
+            for p_local in local_products:
+                barcode = p_local['barcode']
+                p_aws = aws_map.get(barcode)
+                
+                if not p_aws:
+                    # New in Local
+                    products_to_upload.append(p_local)
+                else:
+                    # Exists in both, check for changes
+                    # Normalize types for comparison (AWS uses Decimal, Local uses float/str)
+                    is_different = False
+                    
+                    # Compare specific fields
+                    if p_local['categoria'] != p_aws['categoria']: is_different = True
+                    if p_local['sabor'] != p_aws['sabor']: is_different = True
+                    
+                    # Price comparison (handle potential type mismatch)
+                    try:
+                        price_local = float(p_local['preco'])
+                        price_aws = float(p_aws['preco'])
+                        if abs(price_local - price_aws) > 0.001: # float epsilon
+                            is_different = True
+                    except:
+                        is_different = True # Assume diff on error
+                        
+                    if is_different:
+                        products_to_upload.append(p_local)
+
+            # B) Execute Uploads
+            count_prod_up = 0
+            for p in products_to_upload:
+                self.cloud.add_product(p, shop_name)
+                count_prod_up += 1
+            results["products_uploaded"] = count_prod_up
+
+            # C) Download Check: Cloud -> Local
+            # We add products that are in Cloud but NOT in Local.
+            # (If they were in Local but different, we already prioritized Local -> Cloud above)
+            products_to_download = []
+            
+            for p_aws in aws_products:
+                if p_aws['barcode'] not in local_map:
+                    products_to_download.append(p_aws)
+            
+            # Execute Downloads
+            count_down = 0
+            for p in products_to_download:
                 product_info = {
                     'barcode': p['barcode'],
                     'categoria': p['categoria'],
                     'sabor': p['sabor'],
                     'preco': p['preco']
                 }
-                # Force shop override for local storage consistency if needed
                 self.db.add_product(product_info, shop_name)
                 count_down += 1
             
             results["downloaded"] = count_down
-            results["message"] = "Sync completed successfully"
             
-            # Sync Configs?
-            # From cloud to local
-            if shop_details:
-                for key in ['device', 'id_token', 'pos_name', 'user_id']:
-                    val = shop_details.get(key)
-                    if val: self.db.set_config(key, val)
-
+            msg_parts = ["Sync completed"]
+            if count_prod_up > 0: msg_parts.append(f"Uploaded {count_prod_up} products")
+            if count_down > 0: msg_parts.append(f"Downloaded {count_down} products")
+            results["message"] = ". ".join(msg_parts)
+            
         except Exception as e:
-            results["message"] = f"Error updating local products: {e}"
+            results["message"] = f"Error syncing products: {e}"
+            print(f"Sync error: {e}")
 
         return results
 

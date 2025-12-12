@@ -49,18 +49,23 @@ class ProductApp:
 
         # Keyboard event handling
         self.page.on_keyboard_event = self.on_key_event
-        self.page.on_resized = self._perform_resize
+        self.page.on_resized = self._handle_resize
         self.page.on_window_event = self.on_window_event
-        self._resize_timer = None
 
         # Initialize UI
         saved_shop = self.product_db.get_config('current_shop')
         if saved_shop:
              self.shop = saved_shop
              self.pay = payment.Payment(self, self.shop)
+             
+             
              self.ui = src.ui.main_window.MainWindow(self, page)
              self.ui.build()
              self.page.window.full_screen = True
+             self.page.window.min_width = 1000
+             self.page.window.min_height = 650
+             if hasattr(self.ui, 'update_custom_buttons_visibility'):
+                self.ui.update_custom_buttons_visibility()
              self.page.update()
              self.editor = src.ui.product_editor.ProductEditor(self)
              self.new_sale()
@@ -73,7 +78,8 @@ class ProductApp:
         self.sync_manager = sync_client.SyncManager(self)
         threading.Thread(target=self.sync_manager.start_auto_sync, daemon=True).start()
 
-    def _perform_resize(self, e=None):
+
+    def _handle_resize(self, e=None):
         # Check if window was maximized by OS and switch to full screen
         if self.page.window.maximized:
             self.page.window.maximized = False
@@ -81,35 +87,8 @@ class ProductApp:
             if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
                 self.ui.update_custom_buttons_visibility()
             self.page.update()
-            return
 
-        # Only resize if we are in the main app (shop selected)
-        if not getattr(self, 'shop', None):
-            return
 
-        screen_width = self.page.window.width
-        screen_height = self.page.window.height
-        
-        # Guard against transition glitches
-        if screen_width < 1000:
-            screen_width = 1920
-            screen_height = 1080
-
-        # Update scale factor
-        self.scale_factor = 0.6 * min(screen_width / BASE_WIDTH, screen_height / BASE_HEIGHT)
-
-        # Rebuild UI
-        self.page.clean()
-        self.product_widgets = {} 
-        self.ui = src.ui.main_window.MainWindow(self, self.page)
-        self.ui.build()
-        self.editor = src.ui.product_editor.ProductEditor(self)
-        
-        # Restore Data Display
-        if self.sale:
-             self.update_sale_display()
-        
-        self.page.update()
 
     def on_window_event(self, e):
         if e.data == "maximize":
@@ -347,20 +326,20 @@ class ProductApp:
                 value=f"{details['categoria']} - {details['sabor']}" if details['sabor']
                 else details['categoria'],
                 color="white",
-                size=18,
+                size=11,
                 weight="bold",
                 expand=True
             )
 
             # Layout vars
-            font_size = 30 * self.scale_factor
+            font_size = 18
 
             # Product Name (implied by previous context, but target is specific controls)
             
             # Create quantity controls
             quantity_field = ft.TextField(
                 value=str(details['quantidade']),
-                width=120 * self.scale_factor,
+                width=70,
                 text_size=font_size,
                 on_change=lambda e, row=product_id: self.update_quantity_dynamic(row, e.control.value)
             )
@@ -368,7 +347,7 @@ class ProductApp:
             # Price display
             price_text = ft.TextField(
                 value=f"{details['preco']:.2f}",
-                width=180 * self.scale_factor,
+                width=120,
                 text_size=font_size,
                 text_align=ft.TextAlign.RIGHT,
                 prefix_text="R$ ",
@@ -487,7 +466,7 @@ class ProductApp:
         dlg = ft.AlertDialog(
             title=ft.Text("Possível erro de leitura"),
             content=ft.Column([
-                ft.Text("Escaneie novamente", size=20, weight="bold"),
+                ft.Text("Escaneie novamente", size=12, weight="bold"),
                 barcode_input
             ], height=150, tight=True),
             actions=[
@@ -553,10 +532,10 @@ class ProductApp:
 
     def create_or_update_sale_widgets(self):
         # Scaled dimensions
-        tab_height = 70 * self.scale_factor
-        tab_width = 350 * self.scale_factor
-        icon_size = 40 * self.scale_factor
-        font_size = 40 * self.scale_factor
+        tab_height = 40
+        tab_width = 210
+        icon_size = 24
+        font_size = 24
 
         for sale in self.stored_sales:
             sale_key = f"tab_{sale.id}"
@@ -575,7 +554,7 @@ class ProductApp:
                     border_radius=ft.border_radius.only(top_left=10, top_right=10),
                     bgcolor=ft.Colors.BLUE_900,
                     on_click=lambda e, s=sale: self.open_sale(s.id),
-                    padding=ft.padding.only(left=30 * self.scale_factor),
+                    padding=ft.padding.only(left=18),
                     content=ft.Row(
                         controls=[
                             # Text with left padding
@@ -656,7 +635,7 @@ class ProductApp:
         final_price = self.sale.calculate_total()
 
         payment_content = ft.Column([
-            ft.Text(f"Valor Total: R${final_price:.2f}", size=4),
+            ft.Text(f"Valor Total: R${final_price:.2f}", size=18),
             ft.Dropdown(
                 label="Método de Pagamento",
                 options=[
