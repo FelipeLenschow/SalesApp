@@ -1,6 +1,6 @@
 
+
 import flet as ft
-import pandas as pd
 from datetime import datetime
 import threading
 import time
@@ -130,8 +130,8 @@ class ProductApp:
         self.page.snack_bar.open = True
         self.page.update()
 
-    def open_sync_dialog(self, e):
-        self.sync_manager.open_sync_dialog(e)
+    def run_sync(self, e):
+        self.sync_manager.run_sync()
 
     def mark_unsynced(self):
         self.sync_manager.mark_unsynced()
@@ -161,7 +161,7 @@ class ProductApp:
             self.filtered_products = filtered
 
             # Populate dropdown with ListTiles
-            for _, product in filtered.iterrows():
+            for product in filtered:
                 self.search_results.controls.append(
                     ft.ListTile(
                         leading=ft.Icon(ft.Icons.SEARCH),
@@ -232,10 +232,10 @@ class ProductApp:
             # Handle barcode search
             matching_products = self.product_db.get_products_by_barcode_and_shop(barcode, self.shop)
 
-            if not matching_products.empty:
+            if matching_products: # check if list is not empty
                 if len(matching_products) == 1:
                     # Adiciona unico produto encontrado
-                    product = matching_products.iloc[0]
+                    product = matching_products[0]
                     self.sale.add_product(product)
                     self.update_sale_display(focus_on_=product)
                     
@@ -245,7 +245,7 @@ class ProductApp:
                     # Varios produtos encontrados para o mesmo codigo
                     # DO NOT CLEAR VALUE HERE - keep it so dropdown stays open
                     self.search_results.controls.clear()
-                    for _, product in matching_products.iterrows():
+                    for product in matching_products:
                         self.search_results.controls.append(
                             ft.ListTile(
                                 leading=ft.Icon(ft.Icons.SEARCH),
@@ -334,8 +334,11 @@ class ProductApp:
         if focus_on_ is not None:
             product_id = focus_on_[('Metadata', 'Product ID')]
             if product_id in self.product_widgets:
-                self.product_widgets[product_id]['quantity_field'].focus = True
-                self.widgets_vendas.update()
+                qty_field = self.product_widgets[product_id]['quantity_field']
+                qty_field.focus()
+                qty_field.selection_start = 0
+                qty_field.selection_end = len(qty_field.value)
+                qty_field.update()
 
         if self.valor_pago_entry.value:
             self.calcular_troco()
@@ -350,7 +353,7 @@ class ProductApp:
                 value=f"{details['categoria']} - {details['sabor']}" if details['sabor']
                 else details['categoria'],
                 color="white",
-                size=11,
+                size=22,
                 weight="bold",
                 expand=True
             )
@@ -470,14 +473,26 @@ class ProductApp:
         return str(text)
 
     def confirm_read_error(self, barcode):
+        self.is_editing = True
+
+        def reset_editing(e=None):
+            self.is_editing = False
+            self.page.update()
+
+        def close_dlg(e=None):
+            self.page.close(dlg)
+            reset_editing()
+
         def compare(e):
             entered_barcode = barcode_input.value
             if entered_barcode:
                 if entered_barcode == barcode:
                     self.page.close(dlg)
+                    self.is_editing = False # Reset before opening editor
                     self.editor.open(barcode=entered_barcode)
                 else:
                     self.page.close(dlg)
+                    self.is_editing = False
                     self.barcode_entry.value = entered_barcode
                     self.handle_barcode()
 
@@ -495,9 +510,10 @@ class ProductApp:
             ], height=150, tight=True),
             actions=[
                 ft.TextButton("Confirmar", on_click=compare),
-                ft.TextButton("Cancelar", on_click=lambda e: self.page.close(dlg))
+                ft.TextButton("Cancelar", on_click=close_dlg)
             ],
             actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=reset_editing
         )
 
         self.page.open(dlg)

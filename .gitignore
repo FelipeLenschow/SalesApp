@@ -2,3 +2,7 @@ __pycache__/
 database.db
 .aws/credentials
 *.py[cod]
+
+dist/
+build/
+*.spec

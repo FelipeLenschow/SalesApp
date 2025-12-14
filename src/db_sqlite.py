@@ -2,8 +2,6 @@
 import sqlite3
 import json
 from datetime import datetime
-import pandas as pd
-import numpy as np
 
 class Database:
     def __init__(self, db_path='database.db'):
@@ -111,27 +109,8 @@ class Database:
             raise e
 
     def get_products_dataframe(self):
-        """Returns a DataFrame similar to the one used previously, for compatibility."""
-        try:
-            with self.get_connection() as conn:
-                
-                # Fetch all data needed to reconstruct the DataFrame
-                query = """
-                SELECT 
-                    p.barcode, p.category, p.flavor, 
-                    'Loja' as shop_name, 
-                    pp.price
-                FROM products p
-                JOIN product_prices pp ON p.id = pp.product_id
-                """
-                # This complex reconstruction might be better handled by just fetching
-                # specific queries for the UI, but to maintain 'df' structure for now:
-                # Actually, implementing full DataFrame reconstruction is complex and inefficient.
-                # Let's support the specific methods the UI needs instead.
-                pass
-        except sqlite3.Error:
-            pass
-        return pd.DataFrame() # Return empty for now, we will refactor usage.
+        """Mock method for compatibility - returns empty list."""
+        return []
 
     def get_products_by_barcode_and_shop(self, barcode, shop_name):
         try:
@@ -146,7 +125,6 @@ class Database:
                 cursor.execute(query, (barcode,))
                 rows = cursor.fetchall()
                 
-                # Convert to DataFrame for compatibility
                 data = []
                 for row in rows:
                     data.append({
@@ -154,23 +132,21 @@ class Database:
                         ('Todas', 'Categoria'): row[1],
                         ('Todas', 'Sabor'): row[2],
                         (shop_name, 'Preco'): row[3],
-                        ('Metadata', 'Product ID'): row[4] # Use Product ID as ID
+                        ('Metadata', 'Product ID'): row[4]
                     })
-                return pd.DataFrame(data)
+                return data
         except sqlite3.Error as e:
             print(f"Error fetching products: {e}")
-            return pd.DataFrame()
+            return []
 
     def get_product_info(self, product_id, shop_name):
-        """Fetch product details by ID for the GUI update loop."""
+        """Fetch product details by ID."""
         try:
-            # Check typing, often pandas passes numpy types
             try:
                 product_id = int(product_id)
             except:
                 pass
             
-            # print(f"DEBUG: get_product_info id={product_id} type={type(product_id)} shop={shop_name}")
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 query = """
@@ -190,7 +166,8 @@ class Database:
                         ('Metadata', 'Product ID'): product_id
                     }
                 else:
-                    print(f"DEBUG: Product not found in DB for id={product_id} shop={shop_name}")
+                    # print(f"DEBUG: Product not found in DB for id={product_id} shop={shop_name}")
+                    pass
         except sqlite3.Error as e:
             print(f"Error in get_product_info: {e}")
             pass
@@ -225,38 +202,31 @@ class Database:
                         (shop_name, 'Preco'): row[3],
                          ('Metadata', 'Product ID'): row[4]
                     })
-                return pd.DataFrame(data)
+                return data
         except sqlite3.Error as e:
             print(f"Error searching products: {e}")
-            return pd.DataFrame()
+            return []
 
     def record_sale(self, final_price, payment_method, products_dict):
         try:
-            # Helper to convert numpy types to python native types
-            def convert_numpy(obj):
+            # Basic type conversion if needed (removed numpy dependency)
+            def convert_simple(obj):
                 if isinstance(obj, dict):
-                    return {str(k): convert_numpy(v) for k, v in obj.items()}
+                    return {str(k): convert_simple(v) for k, v in obj.items()}
                 elif isinstance(obj, list):
-                    return [convert_numpy(i) for i in obj]
-                elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
-                    np.int16, np.int32, np.int64, np.uint8,
-                    np.uint16, np.uint32, np.uint64)):
-                    return int(obj)
-                elif isinstance(obj, (np.float16, np.float32, np.float64)):
-                    return float(obj)
-                elif isinstance(obj, (np.ndarray,)): 
-                    return convert_numpy(obj.tolist())
+                    return [convert_simple(i) for i in obj]
+                # Assuming no numpy types passed in anymore or standard types cover it
                 return obj
 
-            clean_products = convert_numpy(products_dict)
+            clean_products = convert_simple(products_dict)
             products_json = json.dumps(clean_products)
             
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO sales (final_price, payment_method, products_json)
-                    VALUES (?, ?, ?)
-                """, (final_price, payment_method, products_json))
+                    INSERT INTO sales (timestamp, final_price, payment_method, products_json)
+                    VALUES (?, ?, ?, ?)
+                """, (datetime.now(), final_price, payment_method, products_json))
         except sqlite3.Error as e:
             print(f"Error recording sale: {e}")
             raise e
@@ -264,40 +234,38 @@ class Database:
     def get_sales_history(self):
         try:
             with self.get_connection() as conn:
-                # Use pandas to read sql is easier for compatibility
+                cursor = conn.cursor()
                 query = "SELECT timestamp, final_price, payment_method, products_json FROM sales ORDER BY timestamp DESC"
-                df = pd.read_sql_query(query, conn)
+                cursor.execute(query)
+                rows = cursor.fetchall()
                 
-                # Transform to match expected format
-                df['Data'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d')
-                df['Horario'] = pd.to_datetime(df['timestamp']).dt.strftime('%H:%M:%S')
-                df.rename(columns={
-                    'final_price': 'Preco Final', 
-                    'payment_method': 'Metodo de pagamento',
-                    'products_json': 'Produtos'
-                }, inplace=True)
+                history = []
+                for row in rows:
+                    ts = row[0]
+                    # SQLite stores datetime as string generally or we get it as string/obj
+                    # If it's a string 'YYYY-MM-DD HH:MM:SS...'
+                    try:
+                        dt_obj = datetime.strptime(str(ts).split('.')[0], '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        try:
+                            dt_obj = datetime.strptime(str(ts), '%Y-%m-%d %H:%M:%S')
+                        except:
+                            # Fallback
+                            dt_obj = datetime.now()
+
+                    history.append({
+                        'timestamp': ts,
+                        'Data': dt_obj.strftime('%Y-%m-%d'),
+                        'Horario': dt_obj.strftime('%H:%M:%S'),
+                        'Preco Final': row[1],
+                        'Metodo de pagamento': row[2],
+                        'Produtos': row[3]
+                    })
                 
-                # Parse JSON products back to dict/string representation if needed, 
-                # but the current history viewer expects string or dict structure.
-                # The previous implementation stored string representation of dict.
-                # json.dumps creates a string, so it should be compatible if we parse it back
-                # OR we keep it as string if the viewer evals it.
-                # history.py uses safe_eval_produtos which uses ast.literal_eval.
-                # JSON string is compatible with ast.literal_eval for basic types.
-                
-                return df
+                return history
         except Exception as e:
             print(f"Error fetching history: {e}")
-            return pd.DataFrame()
-
-    # Property for compatibility
-    @property
-    def df(self):
-        # Allow accessing shops directly via retrieving all prices?
-        # This is strictly related to how 'select_shop_window' works.
-        # It needs 'shops'.
-        return self # partial mock
-
+            return []
 
     def get_all_products_local(self):
         try:

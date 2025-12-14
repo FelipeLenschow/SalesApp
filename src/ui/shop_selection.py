@@ -14,8 +14,8 @@ class ShopSelection:
     def show(self):
         self.page.bgcolor = "#8b0000"
         self.page.window.full_screen = False  # Windowed for selection
-        self.page.window.width = 600
-        self.page.window.height = 500
+        self.page.window.width = 400
+        self.page.window.height = 300
         self.page.window.center()
         self.page.vertical_alignment = ft.MainAxisAlignment.CENTER
         self.page.horizontal_alignment = ft.CrossAxisAlignment.CENTER

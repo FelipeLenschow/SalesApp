@@ -183,7 +183,7 @@ class SyncManager:
     def mark_unsynced(self):
         self.update_fab_status(ft.Colors.BLUE, "Sincronizar (Dados pendentes)")
 
-    def run_sync(self, server_url=None, silent=False):
+    def run_sync(self, silent=False):
         # server_url ignored
         print(f"Running direct AWS sync")
         
@@ -244,41 +244,3 @@ class SyncManager:
 
         threading.Thread(target=sync_process).start()
 
-    def open_sync_dialog(self, e):
-        # Simplified dialog, no IP needed
-        
-        def start_sync(e):
-            if hasattr(self.page, 'close'):
-                 self.page.close(dialog)
-            else:
-                 self.page.close_dialog()
-            self.run_sync()
-
-        def reset_shop(e):
-            self.app.product_db.reset_config('current_shop')
-            self.app.show_error("Loja resetada! Reinicie o programa.")
-            if hasattr(self.page, 'close'):
-                 self.page.close(dialog)
-            else:
-                 self.page.close_dialog()
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("Sincronização em Nuvem"),
-            content=ft.Column([
-                ft.Text("Conexão direta com AWS DynamoDB ativa."),
-                ft.Divider(),
-                ft.TextButton("Trocar/Resetar Loja (Dev)", on_click=reset_shop, style=ft.ButtonStyle(color="red"))
-            ], height=100),
-            actions=[
-                ft.TextButton("Cancelar", on_click=lambda e: self.page.close(dialog) if hasattr(self.page, 'close') else self.page.close_dialog()),
-                ft.ElevatedButton("Sincronizar Agora", on_click=start_sync)
-            ],
-        )
-
-        try:
-            self.page.open(dialog)
-        except AttributeError:
-             self.page.dialog = dialog
-             dialog.open = True
-        
-        self.page.update()

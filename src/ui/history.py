@@ -1,6 +1,4 @@
 import flet as ft
-import pandas as pd
-import numpy as np
 import math
 import ast
 import json
@@ -62,7 +60,7 @@ class SalesHistoryDialog:
             
             # Helper to safely display values
             def safe_str(val):
-                return str(val) if pd.notna(val) else ""
+                return str(val) if val is not None and val != 'None' and val != 'nan' else ""
 
             # Create header row
             header = ft.Row(
@@ -76,13 +74,13 @@ class SalesHistoryDialog:
             )
             self.dialog.content.content.controls.append(header)
             
-            if sales_history.empty:
+            if not sales_history:
                  self.dialog.content.content.controls.append(
                     ft.Text("Nenhum histórico de vendas encontrado.", color=ft.Colors.GREY)
                 )
                  return
 
-            for _, row in sales_history.iterrows():
+            for row in sales_history:
                 preco_final = row['Preco Final']
                 if isinstance(preco_final, (int, float)):
                     preco_final = f"R${preco_final:.2f}"

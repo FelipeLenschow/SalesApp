@@ -199,7 +199,7 @@ class MainWindow:
         # 8. Sales Columns
         self.app.widgets_vendas = ft.Column(
             controls=[],
-            width=720,
+            width=1000,
             spacing=6
         )
 
@@ -275,7 +275,7 @@ class MainWindow:
         self.app.sync_fab = ft.FloatingActionButton(
             icon=ft.Icons.SAVE,
             bgcolor=ft.Colors.BLUE,
-            on_click=self.app.open_sync_dialog,
+            on_click=self.app.run_sync,
             tooltip="Sincronizar",
         )
 

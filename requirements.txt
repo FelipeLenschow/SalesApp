@@ -1,7 +1,6 @@
+boto3
 flet
-pandas
-openpyxl
 requests
 qrcode
 Pillow
-numpy
+pyinstaller

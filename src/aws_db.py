@@ -18,11 +18,20 @@ class DecimalEncoder(json.JSONEncoder):
 
 class Database:
     def __init__(self, region_name='us-east-1'):
-        # Check for local credentials file in project root
-        local_creds = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.aws', 'credentials')
-        if os.path.exists(local_creds):
-            # print(f"Using local credentials file: {local_creds}")
-            os.environ['AWS_SHARED_CREDENTIALS_FILE'] = local_creds
+        # 1. Try to load embedded credentials (priority for built exe)
+        try:
+            import src.embedded_credentials as embedded
+            # print("Using embedded credentials.")
+            os.environ['AWS_ACCESS_KEY_ID'] = embedded.AWS_ACCESS_KEY_ID
+            os.environ['AWS_SECRET_ACCESS_KEY'] = embedded.AWS_SECRET_ACCESS_KEY
+            if hasattr(embedded, 'AWS_DEFAULT_REGION'):
+                 region_name = embedded.AWS_DEFAULT_REGION
+        except ImportError:
+            # 2. Check for local credentials file in project root (dev mode)
+            local_creds = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.aws', 'credentials')
+            if os.path.exists(local_creds):
+                # print(f"Using local credentials file: {local_creds}")
+                os.environ['AWS_SHARED_CREDENTIALS_FILE'] = local_creds
 
         # Initialize DynamoDB resource
         # Ensure AWS credentials are set in environment or ~/.aws/credentials
