@@ -150,6 +150,19 @@ class Database:
             print(f"Error adding product: {e}")
             raise e
 
+    def delete_product(self, barcode, shop_name):
+        """Deletes a product from the specific shop."""
+        try:
+            self.products_table.delete_item(
+                Key={
+                    'barcode': barcode,
+                    'shop_name': shop_name
+                }
+            )
+        except ClientError as e:
+            print(f"Error deleting product: {e}")
+            raise e
+
     def get_all_products(self, shop_name=None):
         """
         Returns list of product dictionaries.
