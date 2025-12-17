@@ -227,7 +227,7 @@ class MainWindow:
                                     ft.Container(height=30),
                                     ft.Column(
                                         [
-                                            ft.Container(height=210),
+                                            ft.Container(height=130),
                                             self.app.widgets_vendas,
                                         ],
                                         expand=True,
@@ -239,11 +239,16 @@ class MainWindow:
                                         alignment=ft.MainAxisAlignment.START,
                                     ),
                                 ],
-                                vertical_alignment=ft.CrossAxisAlignment.START,
+                                vertical_alignment=ft.CrossAxisAlignment.STRETCH,
                                 expand=True,
                             ),
-                            ft.Row([self.app.barcode_stack], alignment=ft.MainAxisAlignment.CENTER),
-                        ])
+                            ft.Container(
+                                content=ft.Row([self.app.barcode_stack], alignment=ft.MainAxisAlignment.CENTER),
+                                top=0,
+                                left=0,
+                                right=0,
+                            )
+                        ], expand=True, fit=ft.StackFit.EXPAND)
                     ],
                     expand=True,
                 ),
