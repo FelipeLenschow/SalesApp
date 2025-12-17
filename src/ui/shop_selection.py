@@ -20,6 +20,7 @@ class ShopSelection:
         self.page.vertical_alignment = ft.MainAxisAlignment.CENTER
         self.page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
+        self.error_text = ft.Text("", color="red", size=14, weight="bold")
         shops = []
         
         # If no local shops, try to fetch from server
@@ -34,13 +35,18 @@ class ShopSelection:
             except Exception as e:
                 print(f"Failed to fetch shops from server: {e}")
                 shops = ["Erro ao conectar ao servidor"]
+                self.error_text.value = f"Erro ao buscar lojas: {e}"
 
         selected_shop = ft.Ref[ft.Dropdown]()
+        # Password field removed
+
         # Password field removed
 
         def on_select(e):
             e.control.disabled = True
             e.control.update()
+            self.error_text.value = "" 
+            self.error_text.update()
             shop_name = selected_shop.current.value
             
             if not shop_name or shop_name == "Erro ao conectar ao servidor":
@@ -60,15 +66,21 @@ class ShopSelection:
                 # SERVER_URL ignored
                 client = sync_client.SyncClient(self.app.product_db)
                 # Pass shop_name explicitly
-                client.sync(shop_name=shop_name)
+                result = client.sync(shop_name=shop_name)
                 
+                if not result.get('success', False):
+                    raise Exception(result.get('message', 'Falha desconhecida na sincronização'))
+
                 # If sync succeeds, save config
                 self.app.product_db.set_config('current_shop', shop_name)
                 # Password saving removed
                 
                 self.page.snack_bar = ft.SnackBar(ft.Text("Dados sincronizados com sucesso!"), bgcolor="green")
+                self.page.snack_bar = ft.SnackBar(ft.Text("Dados sincronizados com sucesso!"), bgcolor="green")
             except Exception as ex:
-                error_msg = f"Erro ao sincronizar: {ex}"
+                error_msg = f"Erro: {ex}"
+                self.error_text.value = error_msg
+                self.error_text.update()
                 
                 # Use AlertDialog for better visibility of errors
                 error_dialog = ft.AlertDialog(
@@ -141,6 +153,7 @@ class ShopSelection:
                     ),
                     # Password field removed
                     ft.Container(height=20),
+                    self.error_text,
                     ft.ElevatedButton("Selecionar", on_click=on_select),
                     ft.Container(height=10)
                 ],

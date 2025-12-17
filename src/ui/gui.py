@@ -269,8 +269,11 @@ class ProductApp:
                 # Original logic cleared it. Let's clear it to allow re-scan cleanly or manual edit in dialog.
                 self.barcode_entry.value = ""
                 self.confirm_read_error(barcode=barcode)
+        else:
+            # Handle text search enter (Done searching)
+            self.ui.hide_dropdown()
 
-            self.page.update()
+        self.page.update()
 
     def on_key_event(self, e: ft.KeyboardEvent):
         if e.key == "Enter":

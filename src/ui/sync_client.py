@@ -28,9 +28,9 @@ class SyncClient:
 
     def sync(self, shop_name=None):
         if not self.cloud:
-            return {"message": "Sem conexão AWS (Credenciais ausentes?)"}
+            return {"message": "Sem conexão AWS (Credenciais ausentes?)", "success": False}
 
-        results = {"uploaded": 0, "downloaded": 0, "message": ""}
+        results = {"uploaded": 0, "downloaded": 0, "deleted_local": 0, "message": "", "success": False}
         
         # 1. Get Sales
         sales_data = []
@@ -48,6 +48,7 @@ class SyncClient:
                     })
         except Exception as e:
             results["message"] = f"Error reading local sales: {e}"
+            results["success"] = False
             return results
 
         # 2. Upload Sales (Always)
@@ -62,7 +63,7 @@ class SyncClient:
             except Exception as e:
                 print(f"Failed to upload sale: {e}")
         
-        results["uploaded"] = count_up
+        results["uploaded_sales"] = count_up
 
         # 3. Product Sync (Bidirectional Smart Sync)
         try:
@@ -74,53 +75,82 @@ class SyncClient:
             aws_map = {p['barcode']: p for p in aws_products}
             local_map = {p['barcode']: p for p in local_products}
             
-            # A) Upload Check: Local -> Cloud
-            # We assume Local is the 'editor' source of truth for conflicts in this version.
+            # A) PRIORITY: Upload Local Modifications
+            # Products marked as 'modified' or new (not in AWS but passed modified check)
             products_to_upload = []
             
             for p_local in local_products:
                 barcode = p_local['barcode']
-                p_aws = aws_map.get(barcode)
+                status = p_local.get('sync_status', 'synced')
                 
-                if not p_aws:
-                    # New in Local
+                # If modified explicitly OR (not in AWS and not explicitly synced - new)
+                # Actually, if not in AWS and 'synced', it implies deletion from cloud.
+                # So we ONLY upload if 'modified'.
+                if status == 'modified':
                     products_to_upload.append(p_local)
-                else:
-                    # Exists in both, check for changes
-                    # Normalize types for comparison (AWS uses Decimal, Local uses float/str)
-                    is_different = False
-                    
-                    # Compare specific fields
-                    if p_local['categoria'] != p_aws['categoria']: is_different = True
-                    if p_local['sabor'] != p_aws['sabor']: is_different = True
-                    
-                    # Price comparison (handle potential type mismatch)
-                    try:
-                        price_local = float(p_local['preco'])
-                        price_aws = float(p_aws['preco'])
-                        if abs(price_local - price_aws) > 0.001: # float epsilon
-                            is_different = True
-                    except:
-                        is_different = True # Assume diff on error
-                        
-                    if is_different:
-                        products_to_upload.append(p_local)
-
-            # B) Execute Uploads
+            
+            # Execute Uploads
             count_prod_up = 0
             for p in products_to_upload:
-                self.cloud.add_product(p, shop_name)
-                count_prod_up += 1
-            results["products_uploaded"] = count_prod_up
+                try:
+                    self.cloud.add_product(p, shop_name)
+                    # Mark as synced on success
+                    self.db.mark_product_synced(p['barcode'])
+                    count_prod_up += 1
+                except Exception as e:
+                    print(f"Failed to upload product {p['barcode']}: {e}")
 
-            # C) Download Check: Cloud -> Local
-            # We add products that are in Cloud but NOT in Local.
-            # (If they were in Local but different, we already prioritized Local -> Cloud above)
+            results["products_uploaded"] = count_prod_up
+            
+            # RE-EVALUATE Local State?
+            # Ideally we rely on memory maps but since we just synced some, we assume they are now equal to what we sent.
+            # But let's check for Downloads/Deletions now.
+            
+            # B) Download Updates & Deletions (Cloud Authority)
             products_to_download = []
+            products_to_delete = [] # Local deletions (because they are missing in Cloud)
             
             for p_aws in aws_products:
-                if p_aws['barcode'] not in local_map:
+                barcode = p_aws['barcode']
+                
+                if barcode not in local_map:
+                    # New in Cloud -> Download
                     products_to_download.append(p_aws)
+                else:
+                    # Exists in Local. Check status.
+                    p_local = local_map[barcode]
+                    status = p_local.get('sync_status', 'synced')
+                    
+                    if status == 'synced':
+                        # If local is synced (not modified pending upload), Cloud is authority.
+                        # Compare content.
+                        is_different = False
+                        if p_local['categoria'] != p_aws['categoria']: is_different = True
+                        if p_local['sabor'] != p_aws['sabor']: is_different = True
+                        try:
+                            if abs(float(p_local['preco']) - float(p_aws['preco'])) > 0.001: is_different = True
+                        except: is_different = True
+                        
+                        if is_different:
+                            products_to_download.append(p_aws)
+                    
+                    # If status == 'modified', we skip downloading. We just tried to upload it.
+                    # If upload failed, we keep local version (conflict -> local wins/retry next time).
+            
+            # Check for Local Deletions (In Local (Synced) but NOT in AWS)
+            for barcode, p_local in local_map.items():
+                if barcode not in aws_map:
+                    status = p_local.get('sync_status', 'synced')
+                    if status == 'synced':
+                        # Valid candidate for deletion (it was synced before, now gone from cloud)
+                        products_to_delete.append(p_local)
+                    # If 'modified', it's a new local creation not yet uploaded (or upload failed above). Keep it.
+
+            # Execute Deletions
+            count_del = 0
+            for p in products_to_delete:
+                self.db.delete_product(p['barcode'])
+                count_del += 1
             
             # Execute Downloads
             count_down = 0
@@ -131,18 +161,26 @@ class SyncClient:
                     'sabor': p['sabor'],
                     'preco': p['preco']
                 }
-                self.db.add_product(product_info, shop_name)
+                # Add with 'synced' status because it comes from cloud
+                self.db.add_product(product_info, shop_name, sync_status='synced')
                 count_down += 1
             
             results["downloaded"] = count_down
+            results["deleted_local"] = count_del
             
             msg_parts = ["Sync completed"]
-            if count_prod_up > 0: msg_parts.append(f"Uploaded {count_prod_up} products")
-            if count_down > 0: msg_parts.append(f"Downloaded {count_down} products")
-            results["message"] = ". ".join(msg_parts)
+            if count_prod_up > 0: msg_parts.append(f"↑ {count_prod_up}")
+            if count_down > 0: msg_parts.append(f"↓ {count_down}")
+            if count_del > 0: msg_parts.append(f"🗑 {count_del}")
+            
+            if len(msg_parts) == 1: msg_parts.append("OK")
+            
+            results["message"] = " | ".join(msg_parts)
+            results["success"] = True
             
         except Exception as e:
             results["message"] = f"Error syncing products: {e}"
+            results["success"] = False
             print(f"Sync error: {e}")
 
         return results
@@ -223,7 +261,7 @@ class SyncManager:
                      self.page.snack_bar.open = True
                      self.page.update()
                 
-                if "error" in str(result.get('message')).lower():
+                if not result.get('success', True):
                      self.update_fab_status(ft.Colors.RED, f"Erro: {result.get('message')}")
                 else:
                      self.update_fab_status(ft.Colors.GREEN, f"Sincronizado: {result.get('message', 'OK')}")

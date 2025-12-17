@@ -42,6 +42,7 @@ def main(page: ft.Page):
         new_code = f"NEW_{int(time.time())}"
         new_prod = {
             'barcode': new_code,
+            'marca': '',
             'categoria': '',
             'sabor': '',
             'preco': 0.0,
@@ -142,8 +143,9 @@ def main(page: ft.Page):
 
     # Column Widths
     W_CODE = 200
-    W_CAT = 400
-    W_FLAV = 400
+    W_BRAND = 150 # New Brand Column
+    W_CAT = 300   # Reduced slightly to fit brand? Or just add it. Let's adjust to keep total reasonable.
+    W_FLAV = 300
     W_PRICE = 150
     W_HEAD_BTN = 50 # Extra space for action header?
 
@@ -189,7 +191,7 @@ def main(page: ft.Page):
         asc = sort_state["ascending"]
         
         if idx is not None:
-             keys = ['barcode', 'categoria', 'sabor', 'preco']
+             keys = ['barcode', 'marca', 'categoria', 'sabor', 'preco']
              if idx < len(keys):
                  key = keys[idx]
                  current_products.sort(key=lambda x: x.get(key, ""), reverse=not asc)
@@ -209,6 +211,7 @@ def main(page: ft.Page):
             
             # Editable Fields
             txt_barcode = ft.TextField(value=p['barcode'], border=ft.InputBorder.UNDERLINE, width=W_CODE)
+            txt_brand = ft.TextField(value=p.get('marca', ''), border=ft.InputBorder.UNDERLINE, width=W_BRAND)
             txt_category = ft.TextField(value=p['categoria'], border=ft.InputBorder.UNDERLINE, width=W_CAT)
             txt_flavor = ft.TextField(value=p['sabor'], border=ft.InputBorder.UNDERLINE, width=W_FLAV)
             txt_price = ft.TextField(value=f"{p['preco']:.2f}", border=ft.InputBorder.UNDERLINE, width=W_PRICE)
@@ -232,6 +235,7 @@ def main(page: ft.Page):
                 content=ft.Row(
                     controls=[
                         txt_barcode,
+                        txt_brand,
                         txt_category,
                         txt_flavor,
                         txt_price,
@@ -264,6 +268,9 @@ def main(page: ft.Page):
             txt_barcode.on_change = make_on_change(p, 'barcode')
             txt_barcode.on_blur = make_on_blur(p, row_container)
             
+            txt_brand.on_change = make_on_change(p, 'marca')
+            txt_brand.on_blur = make_on_blur(p, row_container)
+
             txt_category.on_change = make_on_change(p, 'categoria')
             txt_category.on_blur = make_on_blur(p, row_container)
             
@@ -319,10 +326,22 @@ def main(page: ft.Page):
             return
         
         found_data = None
+        is_green_preserved = False
+
         for p in current_products:
             if p['barcode'] == barcode:
-                p['reviewed'] = True
-                p['scanned'] = True # Mark as scanned
+                # Logic: 
+                # If it's already reviewed (Green) and NOT scanned (Blue), keep it Green.
+                # Otherwise, mark as scanned (Blue).
+                if p.get('reviewed', False) and not p.get('scanned', False):
+                    # It is Green, keep it Green (don't set scanned=True)
+                    # We still set found_data so we scroll to it
+                    is_green_preserved = True
+                else:
+                    # Not green, or already blue -> make it Blue
+                    p['reviewed'] = True
+                    p['scanned'] = True 
+                
                 found_data = p
                 break
         
@@ -337,13 +356,12 @@ def main(page: ft.Page):
                     found_index = i
                     break
             
+            # Determine target color based on actual state
+            target_color = ft.Colors.GREEN_900 if is_green_preserved else ft.Colors.BLUE_900
+            msg_text = f"Produto editado ({barcode}) localizado!" if is_green_preserved else f"Produto {barcode} verificado!"
+
             if found_control:
-                # Update color
-                found_control.bgcolor = ft.Colors.BLUE_900
-                found_control.update()
-                
-                # Scroll to it by calculated offset (since key/index had issues)
-                # Estimated row height set to 57 (between 55 undershoot and 60 overshoot)
+                # Scroll FIRST (User Request)
                 row_height = 57 
                 scroll_offset = found_index * row_height
                 
@@ -351,8 +369,19 @@ def main(page: ft.Page):
                     products_list.scroll_to(offset=scroll_offset, duration=0)
                 except Exception as ex:
                     print(f"Scroll error: {ex}")
+
+                # Flash Effect: Set to White first
+                found_control.bgcolor = ft.Colors.WHITE
+                found_control.update()
+                
+                # Brief pause for the flash
+                time.sleep(0.2)
+                
+                # Update color (ensure it matches the state)
+                found_control.bgcolor = target_color
+                found_control.update()
                     
-                show_snack(f"Produto {barcode} verificado!")
+                show_snack(msg_text)
             else:
                 # Fallback
                 refresh_table()
@@ -362,14 +391,20 @@ def main(page: ft.Page):
                          row_height = 57
                          scroll_offset = i * row_height
                          try:
-                             # We need to find the control to color it
-                             products_list.controls[i].bgcolor = ft.Colors.BLUE_900
-                             products_list.update()
+                             # Scroll FIRST
                              products_list.scroll_to(offset=scroll_offset, duration=0)
+
+                             # Flash behavior on fallback (might be slower but consistent)
+                             products_list.controls[i].bgcolor = ft.Colors.WHITE
+                             products_list.update()
+                             time.sleep(0.2)
+                             
+                             products_list.controls[i].bgcolor = target_color
+                             products_list.update()
                          except: pass
                          break
                 
-                show_snack(f"Produto {barcode} verificado!")
+                show_snack(msg_text)
                 
         else:
             show_snack(f"Produto {barcode} não encontrado na lista!", ft.Colors.RED)
@@ -483,9 +518,10 @@ def main(page: ft.Page):
     header_row = ft.Row(
         controls=[
             ft.Container(ft.TextButton("Código", on_click=lambda e: header_click(0)), width=W_CODE),
-            ft.Container(ft.TextButton("Categoria", on_click=lambda e: header_click(1)), width=W_CAT),
-            ft.Container(ft.TextButton("Sabor", on_click=lambda e: header_click(2)), width=W_FLAV),
-            ft.Container(ft.TextButton("Preço", on_click=lambda e: header_click(3)), width=W_PRICE),
+            ft.Container(ft.TextButton("Marca", on_click=lambda e: header_click(1)), width=W_BRAND),
+            ft.Container(ft.TextButton("Categoria", on_click=lambda e: header_click(2)), width=W_CAT),
+            ft.Container(ft.TextButton("Sabor", on_click=lambda e: header_click(3)), width=W_FLAV),
+            ft.Container(ft.TextButton("Preço", on_click=lambda e: header_click(4)), width=W_PRICE),
             ft.Container(
                 ft.IconButton(
                     icon=ft.Icons.DELETE_SWEEP, 

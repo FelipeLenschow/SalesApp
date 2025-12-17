@@ -45,6 +45,13 @@ class Database:
         try:
             with self.get_connection() as conn:
                 conn.executescript(create_tables_sql)
+                
+                # Migration: Add sync_status if not exists
+                try:
+                    conn.execute("ALTER TABLE products ADD COLUMN sync_status TEXT DEFAULT 'synced'")
+                except sqlite3.OperationalError:
+                     # Column likely already exists
+                     pass
         except sqlite3.Error as e:
             print(f"Error initializing database: {e}")
 
@@ -75,7 +82,7 @@ class Database:
         except sqlite3.Error as e:
             print(f"Error resetting config: {e}")
 
-    def add_product(self, product_info, shop_name):
+    def add_product(self, product_info, shop_name, sync_status='synced'):
         
         barcode = product_info['barcode']
         category = product_info['categoria']
@@ -88,13 +95,22 @@ class Database:
 
                 # Get or Insert Product (Global Attributes)
                 cursor.execute("""
-                    INSERT OR IGNORE INTO products (barcode, category, flavor)
-                    VALUES (?, ?, ?)
-                """, (barcode, category, flavor))
+                    INSERT INTO products (barcode, category, flavor, sync_status)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(barcode, flavor, category) DO UPDATE SET
+                    sync_status=excluded.sync_status
+                """, (barcode, category, flavor, sync_status))
                 
-                # Retrieve product_id (needed because INSERT OR IGNORE might not return rowid if ignored)
+                # Retrieve product_id
                 cursor.execute("SELECT id FROM products WHERE barcode = ? AND category = ? AND flavor = ?", (barcode, category, flavor))
-                product_id = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                if row:
+                     product_id = row[0]
+                else:
+                     # Fallback if something weird happens, though insert/update should ensure it exists
+                     # Or maybe it existed but attributes differ? 
+                     # For now assuming unique constraint holds
+                     return
 
                 # Insert or Update Price
                 cursor.execute("""
@@ -272,7 +288,7 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 query = """
-                SELECT p.barcode, p.category, p.flavor, pp.price
+                SELECT p.barcode, p.category, p.flavor, pp.price, p.sync_status
                 FROM products p
                 JOIN product_prices pp ON p.id = pp.product_id
                 """
@@ -284,10 +300,32 @@ class Database:
                         'barcode': row[0],
                         'categoria': row[1],
                         'sabor': row[2],
-                        'preco': row[3]
+                        'preco': row[3],
+                        'sync_status': row[4] if len(row) > 4 else 'synced'
                     })
                 return products
         except sqlite3.Error as e:
             print(f"Error fetching all products: {e}")
             return []
+
+    def delete_product(self, barcode):
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Find ID first
+                cursor.execute("SELECT id FROM products WHERE barcode = ?", (barcode,))
+                row = cursor.fetchone()
+                if row:
+                    prod_id = row[0]
+                    cursor.execute("DELETE FROM product_prices WHERE product_id = ?", (prod_id,))
+                    cursor.execute("DELETE FROM products WHERE id = ?", (prod_id,))
+        except sqlite3.Error as e:
+            print(f"Error deleting product: {e}")
+
+    def mark_product_synced(self, barcode):
+        try:
+             with self.get_connection() as conn:
+                conn.execute("UPDATE products SET sync_status = 'synced' WHERE barcode = ?", (barcode,))
+        except sqlite3.Error as e:
+             print(f"Error marking product synced: {e}")
 

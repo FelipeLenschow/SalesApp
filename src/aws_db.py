@@ -135,6 +135,7 @@ class Database:
         category = product_info['categoria']
         flavor = product_info['sabor']
         price = product_info['preco'] # Decimal conversion happens automatically by boto3 usually, or we cast.
+        brand = product_info.get('marca', '') # Add brand support
 
         try:
             self.products_table.put_item(
@@ -143,7 +144,8 @@ class Database:
                     'shop_name': shop_name,
                     'category': category,
                     'flavor': flavor,
-                    'price': decimal.Decimal(str(price))
+                    'price': decimal.Decimal(str(price)),
+                    'brand': brand
                 }
             )
         except ClientError as e:
@@ -186,7 +188,8 @@ class Database:
                     'categoria': item.get('category', ''),
                     'sabor': item.get('flavor', ''),
                     'preco': float(item.get('price', 0.0)),
-                    'shop_name': item['shop_name']
+                    'shop_name': item['shop_name'],
+                    'marca': item.get('brand', '')
                 })
             return results
         except ClientError as e:

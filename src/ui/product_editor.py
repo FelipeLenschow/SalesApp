@@ -132,7 +132,7 @@ class ProductEditor:
                 }
 
                 # Update product in database
-                self.app.product_db.add_product(product_info, shop)
+                self.app.product_db.add_product(product_info, shop, sync_status='modified')
                 self.app.mark_unsynced()
 
                 # Update price in current sale if item exists
