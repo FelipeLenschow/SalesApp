@@ -19,7 +19,7 @@ import src.ui.sync_client as sync_client
 # Constants for UI scaling
 BASE_WIDTH = 1920
 BASE_HEIGHT = 1080
-Version = "0.6.0"  # Increment version
+Version = "1.0.0"  # Increment version
 
 
 class ProductApp:

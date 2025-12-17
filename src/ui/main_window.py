@@ -200,14 +200,18 @@ class MainWindow:
         self.app.widgets_vendas = ft.Column(
             controls=[],
             width=1000,
-            spacing=6
+            spacing=6,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
 
         self.app.stored_sales_row = ft.Row(
             controls=[],
-            wrap=True,
+            wrap=False,
             spacing=12,
-            scroll=ft.ScrollMode.ALWAYS,
+            scroll=ft.ScrollMode.AUTO,
+            height=50,
+            vertical_alignment=ft.CrossAxisAlignment.START,
             alignment=ft.MainAxisAlignment.START,
         )
 
@@ -246,20 +250,27 @@ class MainWindow:
                 ft.Row(
                     controls=[
                         ft.Container(
-                            content=ft.IconButton(
-                                icon=ft.Icons.ADD,
-                                icon_color="white",
-                                icon_size=24,
-                                tooltip="Nova Venda",
-                                on_click=lambda e: self.app.new_sale()
+                            content=ft.Column(
+                                controls=[
+                                    ft.IconButton(
+                                        icon=ft.Icons.ADD,
+                                        icon_color="white",
+                                        icon_size=24,
+                                        tooltip="Nova Venda",
+                                        on_click=lambda e: self.app.new_sale()
+                                    ),
+                                    ft.Container(height=10)
+                                ],
+                                spacing=0,
+                                tight=True,
                             ),
                             padding=ft.padding.only(left=6, right=6),
                         ),
                         ft.Container(
                             content=self.app.stored_sales_row,
-                            height=150,
+                            height=80,
                             expand=True,
-                            padding=ft.padding.only(bottom=0),
+                            padding=ft.padding.only(bottom=0, right=200),
                             border_radius=6,
                             alignment=ft.alignment.bottom_left,
                         )
