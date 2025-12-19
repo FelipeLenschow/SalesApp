@@ -652,10 +652,10 @@ class ProductApp:
 
         self.update_sale_display()
 
-    def open_sale(self, id):
+    def open_sale(self, id, save_current=True):
         sale_to_open = next((sale for sale in self.stored_sales if sale.id == id), None)
         if sale_to_open:
-            self.new_sale(sale_to_open=sale_to_open)
+            self.new_sale(sale_to_open=sale_to_open, save_current=save_current)
             self.update_sale_display()
 
     def create_or_update_sale_widgets(self):
@@ -736,24 +736,32 @@ class ProductApp:
         self.page.update()
 
     def delete_stored_sale(self, sale_id):
-        # Remove the tab container
-        self.stored_sales_row.controls = [
-            tab for tab in self.stored_sales_row.controls
-            if tab.key != f"tab_{sale_id}"
-        ]
-
-        # Remove from internal list
+        print(f"DEBUG: delete_stored_sale called for {sale_id}")
+        print(f"DEBUG: Before delete, stored_sales IDs: {[s.id for s in self.stored_sales]}")
+        
+        # 1. Remove from internal list FIRST
+        len_before = len(self.stored_sales)
         self.stored_sales = [s for s in self.stored_sales if s.id != sale_id]
+        len_after = len(self.stored_sales)
+        print(f"DEBUG: Removed {len_before - len_after} items. Current IDs: {[s.id for s in self.stored_sales]}")
 
-        # Update interface
-        self.page.update()
+        # 2. Try to remove the tab container
+        try:
+            self.stored_sales_row.controls = [
+                tab for tab in self.stored_sales_row.controls
+                if getattr(tab, 'key', "") != f"tab_{sale_id}"
+            ]
+            self.page.update()
+        except Exception as e:
+            print(f"Error removing tab from UI: {e}")
 
-        # If deleting the current sale, switch to another or create new if empty
-        if self.sale.id == sale_id:
+        # 3. Switch/New
+        if self.sale and self.sale.id == sale_id: # Check self.sale exists
+            print("DEBUG: Deleting current sale, switching/creating new.")
             if self.stored_sales:
-                self.open_sale(self.stored_sales[-1].id)
+                self.open_sale(self.stored_sales[-1].id, save_current=False)
             else:
-                self.new_sale()
+                self.new_sale(save_current=False)
 
     def cobrar(self):
         if not self.sale.current_sale:
@@ -801,6 +809,7 @@ class ProductApp:
     def finalize_sale(self, internal_id):
         def process_sale():
             # Record sale to SQLite
+            print(f"DEBUG FINALIZED: ID={internal_id}, Price={final_price:.2f}, Time={datetime.now()}")
             try:
                 self.product_db.record_sale(
                     final_price=final_price, 
@@ -814,7 +823,11 @@ class ProductApp:
 
         sale = next((sale for sale in self.stored_sales if sale.id == internal_id), None)
 
-        if not sale or not sale.current_sale:
+        if not sale:
+            # Already finalized or invalid ID. Silently ignore to prevent double-click errors.
+            return
+
+        if not sale.current_sale:
             self.show_error("Sem produtos nas vendas!")
             return
 
@@ -823,14 +836,21 @@ class ProductApp:
 
         # Save sale details
         # Save sale logic moved to record_sale
+        # Save sale details
+        # Save sale logic moved to record_sale
         threading.Thread(target=process_sale).start()
 
-        threading.Thread(target=process_sale).start()
-
-        self.product_widgets.clear()
-        self.widgets_vendas.controls.clear()
-        self.delete_stored_sale(internal_id)
-        self.update_sale_display()
+        try:
+            print(f"DEBUG: Starting UI cleanup for sale {internal_id}")
+            self.product_widgets.clear()
+            self.widgets_vendas.controls.clear()
+            self.delete_stored_sale(internal_id)
+            self.update_sale_display()
+            print(f"DEBUG: Finished UI cleanup for sale {internal_id}")
+        except Exception as e:
+            print(f"ERROR in finalize_sale UI cleanup: {e}")
+            import traceback
+            traceback.print_exc()
 
     def show_sales_history(self, e=None):
         hist.SalesHistoryDialog(self.page, self).show()
@@ -863,13 +883,16 @@ class ProductApp:
             self.stored_sales.append(self.sale)
             self.create_or_update_sale_widgets()
 
-    def new_sale(self, e=None, sale_to_open=None):
+    def new_sale(self, e=None, sale_to_open=None, save_current=True):
 
         if sale_to_open is None:
+            if save_current and self.sale: # Save old if requested and exists
+                 self.store_sale()
             self.sale = sale.Sale(self.product_db, self.shop)
-            self.store_sale()
+            self.store_sale() # Store the NEW one
         else:
-            self.store_sale()
+            if save_current:
+                self.store_sale()
             self.sale = sale_to_open
 
         # Clear UI elements
