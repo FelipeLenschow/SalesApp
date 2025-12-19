@@ -70,7 +70,7 @@ class ProductApp:
                 self.ui.update_custom_buttons_visibility()
              self.page.update()
              self.editor = src.ui.product_editor.ProductEditor(self)
-             self.new_sale()
+             self.editor = src.ui.product_editor.ProductEditor(self)
              self.new_sale()
         else:
             # Check if we need to download DB (first run or reset)
@@ -825,7 +825,8 @@ class ProductApp:
         # Save sale logic moved to record_sale
         threading.Thread(target=process_sale).start()
 
-        self.new_sale()
+        threading.Thread(target=process_sale).start()
+
         self.product_widgets.clear()
         self.widgets_vendas.controls.clear()
         self.delete_stored_sale(internal_id)
