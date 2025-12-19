@@ -25,10 +25,10 @@ class ProductEditor:
             
             current_data = {
                 'titulo_da_aba': 'Editar Produto',
-                'barcode': product_series.get(('Todas', 'Codigo de Barras'), ''),
-                'sabor': product_series.get(('Todas', 'Sabor'), ''),
-                'categoria': product_series.get(('Todas', 'Categoria'), ''),
-                'preco': product_series.get((shop, 'Preco'), 0),
+                'barcode': product_series.get('barcode', ''),
+                'sabor': product_series.get('sabor', ''),
+                'categoria': product_series.get('categoria', ''),
+                'preco': product_series.get('preco', 0),
             }
         else:
             current_data = {
@@ -132,7 +132,7 @@ class ProductEditor:
                 }
 
                 # Update product in database
-                self.app.product_db.add_product(product_info, shop, sync_status='modified')
+                self.app.product_db.add_product(product_info, shop)
                 self.app.mark_unsynced()
 
                 # Update price in current sale if item exists

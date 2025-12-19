@@ -2,12 +2,13 @@ import flet as ft
 import math
 import ast
 import json
-import src.db_sqlite as db
+
 
 class SalesHistoryDialog:
-    def __init__(self, page):
+    def __init__(self, page, app):
         self.page = page
-        self.db = db.Database()
+        self.app = app
+        self.db = app.product_db
         self.dialog = ft.AlertDialog(
             title=ft.Text("Histórico de Vendas"),
             content=ft.Container(
@@ -55,8 +56,8 @@ class SalesHistoryDialog:
 
     def load_data(self):
         try:
-            # Load from SQLite
-            sales_history = self.db.get_sales_history()
+            # Load from AWS DB
+            sales_history = self.db.get_sales_history(shop_name=self.app.shop)
             
             # Helper to safely display values
             def safe_str(val):

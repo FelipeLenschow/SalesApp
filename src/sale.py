@@ -21,13 +21,14 @@ class Sale:
         self.final_price = total_price
         return self.final_price
 
+
     def add_product(self, product):
-        product_id = product[('Metadata', 'Product ID')]
+        product_id = product.get('product_id', product.get('barcode')) # Fallback
         if product_id not in self.current_sale or (type(product_id) == str and product_id.startswith('Manual')):
             self.current_sale[product_id] = {
-                'categoria': product[('Todas', 'Categoria')],
-                'sabor': product[('Todas', 'Sabor')],
-                'preco': product[(self.shop, 'Preco')],
+                'categoria': product.get('categoria', ''),
+                'sabor': product.get('sabor', ''),
+                'preco': product.get('preco', 0.0),
                 'quantidade': 1,
                 'product_id': product_id
             }

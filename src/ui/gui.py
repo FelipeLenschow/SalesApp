@@ -1,5 +1,3 @@
-
-
 import flet as ft
 from datetime import datetime
 import threading
@@ -8,13 +6,16 @@ import unicodedata
 import src.ui.history as hist
 
 # Local imports
-import src.db_sqlite as db  # Changed import
+from src.aws_db import Database
+import src.aws_db as aws_db_module
 import src.ui.main_window
 import src.ui.product_editor
 import src.ui.shop_selection
 import src.sale as sale
 import src.payment as payment
 import src.ui.sync_client as sync_client
+
+import src.db_sqlite as sqlite_db
 
 # Constants for UI scaling
 BASE_WIDTH = 1920
@@ -29,9 +30,6 @@ class ProductApp:
 
         self.product_widgets = {}
         self.sale_frame = ft.Column()
-
-        # Initialize product database
-        self.product_db = db.Database()  # Use new SQLite Database
 
         # Initialize
         self.sale = None
@@ -53,11 +51,15 @@ class ProductApp:
         self.page.on_window_event = self.on_window_event
 
         # Initialize UI
-        saved_shop = self.product_db.get_config('current_shop')
+
+        # Check for saved shop in LOCAL DB
+        local_conn = sqlite_db.Database()
+        saved_shop = local_conn.get_config('current_shop')
+        
         if saved_shop:
+             self.product_db = local_conn  # Use local DB
              self.shop = saved_shop
              self.pay = payment.Payment(self, self.shop)
-             
              
              self.ui = src.ui.main_window.MainWindow(self, page)
              self.ui.build()
@@ -69,14 +71,103 @@ class ProductApp:
              self.page.update()
              self.editor = src.ui.product_editor.ProductEditor(self)
              self.new_sale()
+             self.new_sale()
         else:
-            selection_ui = src.ui.shop_selection.ShopSelection(self, self.page)
-            selection_ui.show()
+            # Check if we need to download DB (first run or reset)
+            need_download = True
+            try:
+                # Check if we have any products locally
+                with local_conn.get_connection() as conn:
+                    count = conn.execute("SELECT count(*) FROM products").fetchone()[0]
+                    if count > 0:
+                        need_download = False
+            except:
+                pass
 
-        # Start auto-sync thread
+            if need_download:
+                self.show_loading_screen()
+            else:
+                self.product_db = local_conn # Use local DB even for selection (it has data now)
+                selection_ui = src.ui.shop_selection.ShopSelection(self, self.page)
+                selection_ui.show()
+
         # Start auto-sync thread
         self.sync_manager = sync_client.SyncManager(self)
         threading.Thread(target=self.sync_manager.start_auto_sync, daemon=True).start()
+
+
+    def show_loading_screen(self):
+        self.page.clean()
+        self.page.bgcolor = "#8b0000"
+        self.page.window.full_screen = False
+        self.page.window.width = 400
+        self.page.window.height = 300
+        self.page.window.center()
+        
+        status_text = ft.Text("Conectando ao servidor...", color="white", size=16)
+        progress_bar = ft.ProgressBar(width=300, color="amber", bgcolor="#440000")
+        
+        self.page.add(
+            ft.Column(
+                [
+                    ft.Text("Configuração Inicial", size=24, weight="bold", color="white"),
+                    ft.Text("Baixando banco de dados completo...", color="white70"),
+                    ft.Container(height=20),
+                    progress_bar,
+                    ft.Container(height=10),
+                    status_text
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                expand=True
+            )
+        )
+        self.page.update()
+        
+        def download_task():
+            try:
+                # 1. Connect AWS
+                status_text.value = "Conectando AWS..."
+                self.page.update()
+                aws_conn = aws_db_module.Database()
+                
+                # 2. Fetch
+                status_text.value = "Baixando produtos (Isso pode demorar)..."
+                self.page.update()
+                
+                def on_progress(count):
+                    status_text.value = f"Baixado: {count} produtos..."
+                    self.page.update()
+
+                products = aws_conn.get_all_products_grouped(progress_callback=on_progress)
+                
+                # 3. Save Local
+                status_text.value = "Salvando no cache local..."
+                self.page.update()
+                local_conn = sqlite_db.Database()
+                local_conn.replace_all_products(products)
+                
+                # 4. Proceed
+                status_text.value = "Concluído!"
+                self.page.update()
+                time.sleep(1)
+                
+                self.product_db = local_conn
+                selection_ui = src.ui.shop_selection.ShopSelection(self, self.page)
+                
+                # Must run UI updates on main thread usually, but Flet often handles simple app struct.
+                # Ideally we clear and show selection.
+                self.page.clean()
+                selection_ui.show()
+                
+            except Exception as e:
+                status_text.value = f"Erro: {e}"
+                status_text.color = "red"
+                progress_bar.value = 0
+                self.page.update()
+                print(f"Download error: {e}")
+
+        threading.Thread(target=download_task, daemon=True).start()
 
 
     def _handle_resize(self, e=None):
@@ -131,6 +222,9 @@ class ProductApp:
         self.page.update()
 
     def run_sync(self, e):
+        """
+        Trigger Manual Sync via SyncManager.
+        """
         self.sync_manager.run_sync()
 
     def mark_unsynced(self):
@@ -166,13 +260,13 @@ class ProductApp:
                     ft.ListTile(
                         leading=ft.Icon(ft.Icons.SEARCH),
                         title=ft.Text(
-                            f"{product[('Todas', 'Categoria')]} "
-                            f"({product[('Todas', 'Sabor')]})",
+                            f"{product['categoria']} "
+                            f"({product['sabor']})",
                             weight=ft.FontWeight.BOLD,
                         ),
                         subtitle=ft.Text(
-                            f"R${product[(self.shop, 'Preco')]:.2f} | "
-                            f"Cod: {product[('Todas', 'Codigo de Barras')]}"
+                            f"R${product['preco']:.2f} | "
+                            f"Cod: {product['barcode']}"
                         ),
                         on_click=lambda e, p=product: self.select_product(p),
                         text_color=ft.Colors.BLACK
@@ -210,11 +304,11 @@ class ProductApp:
                 value = float(barcode.replace(",", "."))
                 self.manual_add_count += 1
                 product = {
-                    ('Metadata', 'Product ID'): f'Manual_{self.manual_add_count}',
-                    ('Todas', 'Categoria'): 'Não cadastrado',
-                    ('Todas', 'Sabor'): '',
-                    (self.shop, 'Preco'): value,
-                    (self.shop, 'Preco'): value
+                    'product_id': f'Manual_{self.manual_add_count}',
+                    'categoria': 'Não cadastrado',
+                    'sabor': '',
+                    'preco': value,
+                    'barcode': f'Manual_{self.manual_add_count}'
                 }
                 self.manual_add_list.append(product)
                 self.sale.add_product(product)
@@ -250,13 +344,13 @@ class ProductApp:
                             ft.ListTile(
                                 leading=ft.Icon(ft.Icons.SEARCH),
                                 title=ft.Text(
-                                    f"{product[('Todas', 'Categoria')]} "
-                                    f"({product[('Todas', 'Sabor')]})",
+                                    f"{product['categoria']} "
+                                    f"({product['sabor']})",
                                     weight=ft.FontWeight.BOLD,
                                 ),
                                 subtitle=ft.Text(
-                                    f"R${product[(self.shop, 'Preco')]:.2f} | "
-                                    f"Cod: {product[('Todas', 'Codigo de Barras')]}"
+                                    f"R${product['preco']:.2f} | "
+                                    f"Cod: {product['barcode']}"
                                 ),
                                 on_click=lambda e, p=product: self.select_product(p),
                                 text_color=ft.Colors.BLACK  # Fix: Make text visible
@@ -278,23 +372,13 @@ class ProductApp:
     def on_key_event(self, e: ft.KeyboardEvent):
         if e.key == "Enter":
             pass # Handled by on_submit
-        elif e.key == "F5":
-            self.update_payment_method(method="Débito")
-        elif e.key == "F6":
-            self.update_payment_method(method="Crédito")
-        elif e.key == "F7":
-            self.update_payment_method(method="Pix")
-        elif e.key == "F8":
-            self.update_payment_method(method="Dinheiro")
-        elif e.key == "F9":
-            self.cobrar()
-        elif e.key == "F10":
-            self.new_sale()
         elif e.key == "F11":
             self.finalize_sale(self.sale.id)
-        elif e.key == "F12":
+        elif e.key == "F12" or e.key == "\x02" or (e.ctrl and e.key == "B"):
             if not self.is_editing:
                 self.barcode_entry.focus()
+        elif (e.key == "\x03" or e.key == "Tab") and not self.is_editing:
+             self.handle_barcode()
         self.page.update()
 
     def update_sale_display(self, focus_on_=None, skip_price_update_for=None):
@@ -310,14 +394,15 @@ class ProductApp:
             details = None
             product_series = None
 
-            if type(product_id) != str:
-                # Assuming product_id (int)
-                product_series = self.product_db.get_product_info(product_id, self.sale.shop)
-            else:
-                # Quando ha produtos manualmente adicionados
-                for product in self.manual_add_list:
-                    if product_id == product[('Metadata', 'Product ID')]:
+            # Try to fetch from DB first (UUIDs are strings now)
+            product_series = self.product_db.get_product_info(product_id, self.sale.shop)
+
+            # If not in DB, check manual add list
+            if not product_series:
+                 for product in self.manual_add_list:
+                    if product_id == product['product_id']:
                         product_series = product
+                        break
             
             if product_series is None:
                  print(f"Product not found for ID: {product_id}")
@@ -325,8 +410,8 @@ class ProductApp:
 
 
             details = {
-                'categoria': product_series[('Todas', 'Categoria')],
-                'sabor': product_series[('Todas', 'Sabor')],
+                'categoria': product_series.get('categoria', ''),
+                'sabor': product_series.get('sabor', ''),
                 'preco': self.sale.current_sale[product_id]['preco'],
                 'quantidade': self.sale.current_sale[product_id]['quantidade'],
                 'product_id': product_id
@@ -335,7 +420,7 @@ class ProductApp:
 
         # Se um produto foi passado, focar no widget de quantidade correspondente
         if focus_on_ is not None:
-            product_id = focus_on_[('Metadata', 'Product ID')]
+            product_id = focus_on_['product_id']
             if product_id in self.product_widgets:
                 qty_field = self.product_widgets[product_id]['quantity_field']
                 qty_field.focus()
@@ -747,7 +832,7 @@ class ProductApp:
         self.update_sale_display()
 
     def show_sales_history(self, e=None):
-        hist.SalesHistoryDialog(self.page).show()
+        hist.SalesHistoryDialog(self.page, self).show()
         self.page.update()
 
     def on_payment_method_change(self, e):

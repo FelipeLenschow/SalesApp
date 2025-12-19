@@ -1,550 +1,660 @@
-
 import flet as ft
 from src.aws_db import Database
 import time
+import threading
 
-def main(page: ft.Page):
-    page.title = "Gerenciador de Lojas - DynamoDB"
-    page.theme_mode = ft.ThemeMode.DARK # Dark Theme
-    page.padding = 20
-    
-    # Initialize DB
-    db = Database()
-    
-    # State
-    current_products = [] # List of dicts
-    deleted_products = [] # Track deletions for sync
-    sort_state = {"index": None, "ascending": True}
-    
-    # ... (skipping to functions)
+class StoreManagerApp:
+    def __init__(self, page: ft.Page):
+        self.page = page
+        self.page.title = "Gerenciador de Lojas - Matriz de Preços"
+        self.page.theme_mode = ft.ThemeMode.DARK # Dark Theme
+        self.page.padding = 20
+        
+        # Initialize DB
+        self.db = Database()
+        
+        # State
+        self.current_products = [] 
+        self.known_shops = []
 
-    def delete_product(prod):
-        if prod in current_products:
-            deleted_products.append(prod)
-            current_products.remove(prod)
-            refresh_table()
+        # Dirty Tracking
+        self.dirty_prices = set() # (barcode, shop_name)
+        self.dirty_metadata = set() # barcode
+        
+        # Review Tracking
+        self.reviewed_rows = set() # barcode
+        
+        # UI Constants
+        self.W_CODE = 140
+        self.W_TEXT = 140
+        self.W_CAT = 300 # Wider
+        self.W_FLAVOR = 300 # Wider
+        self.W_PRICE = 90
+        
+        # Colors
+        self.COLOR_EDITED = ft.Colors.BLUE_900
+        self.COLOR_REVIEWED = ft.Colors.GREEN_900
+        self.COLOR_BLINK = ft.Colors.WHITE
+        self.COLOR_DEFAULT = None
 
-    def delete_all_products(e):
-        # Track all as deleted
-        deleted_products.extend(current_products)
-        current_products.clear()
-        refresh_table()
-        # Unlock source store and load button, disable add
-        dd_source_store.disabled = False
-        btn_load.disabled = False
-        btn_add.disabled = True
-        page.update()
+        # Search Indicator
+        self.last_searched_barcode = None
 
-    def add_new_product(e):
-        # ... (rest of function)
-        # Add a new empty product
-        import time
-        new_code = f"NEW_{int(time.time())}"
-        new_prod = {
-            'barcode': new_code,
+        # Deferred Operations
+        self.dirty_new_shops = set()
+        self.dirty_deletes = set() # product_ids to delete
+
+        self.build_ui()
+
+    def show_snack(self, message, color=ft.Colors.GREEN):
+        self.page.snack_bar = ft.SnackBar(ft.Text(str(message)), bgcolor=color)
+        self.page.snack_bar.open = True
+        self.page.update()
+
+    def get_row_color(self, barcode):
+        is_dirty_meta = barcode in self.dirty_metadata
+        is_dirty_price = any(d_bc == barcode for d_bc, _ in self.dirty_prices)
+        
+        if is_dirty_meta or is_dirty_price:
+            return self.COLOR_EDITED
+        
+        if barcode in self.reviewed_rows:
+            return self.COLOR_REVIEWED
+            
+        return self.COLOR_DEFAULT
+
+    def update_row_visuals(self, barcode):
+        # Scan controls to find the row (now only product rows in list)
+        for ctrl in self.products_list.controls:
+            if isinstance(ctrl, ft.Container) and ctrl.key == barcode:
+                ctrl.bgcolor = self.get_row_color(barcode)
+                
+                # Apply Indicator Border if it's the last searched item
+                if barcode == self.last_searched_barcode:
+                    ctrl.border = ft.border.all(3, ft.Colors.CYAN)
+                else:
+                    ctrl.border = None
+                
+                ctrl.update()
+                return
+
+    def toggle_review(self, e, barcode):
+        if barcode in self.reviewed_rows:
+            self.reviewed_rows.remove(barcode)
+            e.control.icon = ft.Icons.CHECK_BOX_OUTLINE_BLANK
+            e.control.icon_color = ft.Colors.GREY
+        else:
+            self.reviewed_rows.add(barcode)
+            e.control.icon = ft.Icons.CHECK_BOX
+            e.control.icon_color = ft.Colors.GREEN
+        
+        e.control.update()
+        self.update_row_visuals(barcode)
+
+    def update_metadata(self, prod, field, value, control):
+        if prod.get(field) != value:
+            prod[field] = value
+            self.dirty_metadata.add(prod['barcode'])
+            self.update_row_visuals(prod['barcode'])
+
+    def update_price(self, prod, shop_name, value, control):
+        try:
+            val_str = value.replace(',', '.')
+            val_float = float(val_str)
+            old_val = prod['prices'].get(shop_name, 0.0)
+            
+            if abs(val_float - old_val) > 0.001:
+                prod['prices'][shop_name] = val_float
+                self.dirty_prices.add((prod['barcode'], shop_name))
+                self.update_row_visuals(prod['barcode'])
+                
+        except ValueError:
+            pass 
+
+    def save_changes(self, e):
+        if not self.dirty_prices and not self.dirty_metadata and not self.dirty_new_shops and not self.dirty_deletes:
+            self.show_snack("Nenhuma alteração pendente (Azul).", ft.Colors.AMBER)
+            return
+
+        self.btn_save.disabled = True
+        self.status_text.value = f"Salvando alterações..."
+        self.page.update()
+        
+        count = 0
+        errors = 0
+        try:
+            # 0. Sync New Shops (Deferred Creation)
+            for new_shop in list(self.dirty_new_shops):
+                try:
+                    self.db.add_shop(new_shop)
+                except Exception as ex:
+                    print(f"Error creating shop {new_shop}: {ex}")
+                    errors += 1
+
+            # 0.5. Sync Deletes
+            for pid in list(self.dirty_deletes):
+                try:
+                    self.db.delete_product_completely(pid)
+                    count += 1
+                except Exception as ex:
+                    print(f"Error deleting product {pid}: {ex}")
+                    errors += 1
+            
+            prod_map = {p['barcode']: p for p in self.current_products}
+            processed_barcodes = set()
+
+            # 1. Save Prices
+            for barcode, shop_name in list(self.dirty_prices):
+                 if barcode in prod_map:
+                     p = prod_map[barcode]
+                     
+                     price_val = p['prices'].get(shop_name, 0.0)
+                     
+                     product_info = {
+                         'product_id': p.get('product_id'),
+                         'barcode': p['barcode'],
+                         'marca': p.get('marca', ''),
+                         'categoria': p.get('categoria', ''),
+                         'sabor': p.get('sabor', ''),
+                         'preco': price_val
+                     }
+                     
+                     try:
+                         # Update product_id if newly created
+                         new_pid = self.db.add_product(product_info, shop_name)
+                         if not p.get('product_id'):
+                             p['product_id'] = new_pid
+                         count += 1
+                         processed_barcodes.add(barcode)
+                     except Exception as ex:
+                         print(f"Error saving {barcode}/{shop_name}: {ex}")
+                         errors += 1
+
+            # 2. Save Metadata
+            for barcode in list(self.dirty_metadata):
+                if barcode not in processed_barcodes and barcode in prod_map:
+                    p = prod_map[barcode]
+                    target_shop = list(p['prices'].keys())[0] if p['prices'] else (self.known_shops[0] if self.known_shops else None)
+                    
+                    if target_shop:
+                        price_val = p['prices'].get(target_shop, 0.0)
+                        
+                        product_info = {
+                            'product_id': p.get('product_id'),
+                            'barcode': p['barcode'],
+                            'marca': p.get('marca', ''),
+                            'categoria': p.get('categoria', ''),
+                            'sabor': p.get('sabor', ''),
+                            'preco': price_val
+                        }
+                        try:
+                            new_pid = self.db.add_product(product_info, target_shop)
+                            if not p.get('product_id'):
+                                p['product_id'] = new_pid
+                            count += 1
+                        except Exception as ex:
+                             print(f"Error saving metadata {barcode}: {ex}")
+                             errors += 1
+            
+            self.dirty_prices.clear()
+            self.dirty_metadata.clear()
+            self.dirty_new_shops.clear()
+            self.dirty_deletes.clear()
+            
+            self.status_text.value = f"Salvo! {count} operações. {errors} erros."
+            self.show_snack(f"Sucesso: {count} registros atualizados!", ft.Colors.GREEN)
+            
+            self.refresh_table()
+
+        except Exception as ex:
+            self.show_snack(f"Erro ao salvar: {ex}", ft.Colors.RED)
+            
+        self.btn_save.disabled = False
+        self.page.update()
+
+    def delete_product_click(self, barcode):
+        def close_dlg(e):
+            self.dlg_modal.open = False
+            self.page.update()
+            
+        def confirm_delete(e):
+            # Remove from local list
+            # We need to find the item in self.current_products
+            for i, p in enumerate(self.current_products):
+                if p['barcode'] == barcode:
+                    pid = p.get('product_id')
+                    if pid:
+                        self.dirty_deletes.add(pid)
+                    
+                    self.current_products.pop(i)
+                    break
+            
+            # Remove from UI by refreshing (expensive but safe) or just list
+            self.refresh_table()
+            self.show_snack(f"Produto {barcode} removido da lista local.", ft.Colors.AMBER)
+            
+            # Note: We are NOT deleting from DB yet, as per request "Push only the lines I have edited".
+            # If user wants to delete from DB, they might need a specific "Delete from Cloud" or we track deletions.
+            # For now, local removal seems to be the intent for "editing".
+            
+            close_dlg(e)
+
+        self.dlg_modal = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Confirmar Exclusão"),
+            content=ft.Text(f"Tem certeza que deseja remover o produto '{barcode}' da lista?"),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dlg),
+                ft.TextButton("Remover", on_click=confirm_delete, style=ft.ButtonStyle(color=ft.Colors.RED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.overlay.append(self.dlg_modal)
+        self.dlg_modal.open = True
+        self.page.update()
+
+
+
+    def refresh_table(self):
+        # 1. Rebuild Headers (Static Row)
+        self.header_container.controls.clear()
+        
+        header_controls = [
+            ft.Text("Ações", width=80, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            ft.Text("Código", width=self.W_CODE, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            ft.Text("Marca", width=self.W_TEXT, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            ft.Text("Categoria", width=self.W_CAT, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            ft.Text("Sabor", width=self.W_FLAVOR, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+        ]
+        
+        for shop in self.known_shops:
+            # Check if this shop is "New" (local only)
+            is_new = shop in self.dirty_new_shops
+            color = ft.Colors.BLUE if is_new else None
+            
+            # Just simple text, no menu
+            header_controls.append(ft.Text(shop, width=self.W_PRICE, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, color=color))
+            
+        self.header_container.controls.append(ft.Row(controls=header_controls))
+        self.header_container.controls.append(ft.Divider())
+        self.header_container.update()
+
+        # 2. Rebuild List (Virtual-like)
+        self.products_list.controls.clear()
+
+        # Build ROWS
+        for p in self.current_products:
+            bc = p['barcode']
+            row_color = self.get_row_color(bc)
+
+            # Check Button
+            is_checked = bc in self.reviewed_rows
+            icon = ft.Icons.CHECK_BOX if is_checked else ft.Icons.CHECK_BOX_OUTLINE_BLANK
+            icon_col = ft.Colors.GREEN if is_checked else ft.Colors.GREY
+            
+            btn_check = ft.IconButton(
+                icon=icon, 
+                icon_color=icon_col,
+                width=35,
+                tooltip="Marcar como Revisado",
+                on_click=lambda e, b=bc: self.toggle_review(e, b)
+            )
+
+            # Delete Button
+            btn_delete = ft.IconButton(
+                icon=ft.Icons.DELETE,
+                icon_color=ft.Colors.RED_400,
+                width=35,
+                tooltip="Remover Linha",
+                on_click=lambda e, b=bc: self.delete_product_click(b)
+            )
+
+            # Fields
+            # Barcode is now Editable
+            txt_barcode = ft.TextField(
+                value=bc, width=self.W_CODE, 
+                border=ft.InputBorder.NONE, text_size=13, bgcolor=ft.Colors.TRANSPARENT,
+                on_change=lambda e, prod=p: self.update_metadata(prod, 'barcode', e.control.value, e.control)
+            )
+            
+            txt_brand = ft.TextField(
+                value=p.get('marca', ''), width=self.W_TEXT, content_padding=5, text_size=13,
+                bgcolor=ft.Colors.TRANSPARENT, border_color=ft.Colors.TRANSPARENT,
+                on_change=lambda e, prod=p: self.update_metadata(prod, 'marca', e.control.value, e.control)
+            )
+            txt_cat = ft.TextField(
+                value=p.get('categoria', ''), width=self.W_CAT, content_padding=5, text_size=13,
+                bgcolor=ft.Colors.TRANSPARENT, border_color=ft.Colors.TRANSPARENT,
+                 on_change=lambda e, prod=p: self.update_metadata(prod, 'categoria', e.control.value, e.control)
+            )
+            txt_flavor = ft.TextField(
+                value=p.get('sabor', ''), width=self.W_FLAVOR, content_padding=5, text_size=13,
+                bgcolor=ft.Colors.TRANSPARENT, border_color=ft.Colors.TRANSPARENT,
+                 on_change=lambda e, prod=p: self.update_metadata(prod, 'sabor', e.control.value, e.control)
+            )
+
+            row_controls = [
+                ft.Row([btn_check, btn_delete], spacing=0, width=80),
+                txt_barcode,
+                txt_brand,
+                txt_cat,
+                txt_flavor
+            ]
+            
+            for shop in self.known_shops:
+                price_val = p['prices'].get(shop, 0.0)
+                
+                txt_price = ft.TextField(
+                    value=f"{price_val:.2f}", 
+                    width=self.W_PRICE, 
+                    content_padding=5,
+                    text_align=ft.TextAlign.RIGHT,
+                    text_size=13,
+                    bgcolor=ft.Colors.TRANSPARENT,
+                    border_color=ft.Colors.TRANSPARENT,
+                    on_change=lambda e, prod=p, s=shop: self.update_price(prod, s, e.control.value, e.control)
+                )
+                row_controls.append(txt_price)
+                
+            # Indicator Border
+            border = ft.border.all(3, ft.Colors.CYAN) if bc == self.last_searched_barcode else None
+
+            row_container = ft.Container(
+                content=ft.Row(controls=row_controls, spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                key=str(bc),
+                padding=ft.padding.only(left=5, right=5, top=2, bottom=2),
+                height=50, 
+                bgcolor=row_color,
+                border=border,
+                border_radius=5
+            )
+            self.products_list.controls.append(row_container)
+            
+        self.products_list.update()
+
+    def load_matrix(self, e):
+        self.status_text.value = "Carregando Matriz Global..."
+        self.btn_load.disabled = True
+        self.page.update()
+        
+        try:
+            shops = self.db.get_shops()
+            shops.sort()
+            self.known_shops.clear()
+            self.known_shops.extend(shops)
+            
+            flat_products = self.db.get_all_products(shop_name=None)
+            
+            pivot_map = {}
+            
+            for item in flat_products:
+                bc = item['barcode']
+                s_name = item.get('shop_name')
+                price = item.get('preco', 0.0)
+                
+                if bc not in pivot_map:
+                    pivot_map[bc] = {
+                        'product_id': item.get('product_id'),
+                        'barcode': bc,
+                        'marca': item.get('marca', ''),
+                        'categoria': item.get('categoria', ''),
+                        'sabor': item.get('sabor', ''),
+                        'prices': {}
+                    }
+                
+                if not pivot_map[bc]['marca'] and item.get('marca'): pivot_map[bc]['marca'] = item.get('marca')
+                if not pivot_map[bc]['categoria'] and item.get('categoria'): pivot_map[bc]['categoria'] = item.get('categoria')
+
+                if s_name:
+                    pivot_map[bc]['prices'][s_name] = price
+            
+            self.current_products.clear()
+            self.current_products.extend(list(pivot_map.values()))
+            self.current_products.sort(key=lambda x: x['barcode'])
+            
+            self.dirty_prices.clear()
+            self.dirty_metadata.clear()
+            self.reviewed_rows.clear()
+            self.dirty_new_shops.clear()
+            self.dirty_deletes.clear()
+            self.last_searched_barcode = None
+            
+            self.refresh_table()
+            
+            self.status_text.value = f"Carregado: {len(self.current_products)} produtos, {len(self.known_shops)} lojas."
+            self.show_snack("Download concluído.", ft.Colors.GREEN)
+            
+        except Exception as ex:
+            print(ex)
+            self.status_text.value = f"Erro: {ex}"
+            self.show_snack(f"Erro de conexão: {ex}", ft.Colors.RED)
+            
+        self.btn_load.disabled = False
+        self.page.update()
+
+    def add_store_click(self, e):
+        def close_dlg(e):
+            self.dlg_modal.open = False
+            self.page.update()
+            
+        def confirm_add_store(e):
+            name = txt_store_name.value.strip()
+            if not name: return
+            
+            source_shop = dd_copy_from.value
+            
+            try:
+                if name in self.known_shops:
+                    self.show_snack("Loja já existe!", ft.Colors.RED)
+                    return
+
+                # DEFER CREATION: Only add to local lists
+                self.known_shops.append(name)
+                self.known_shops.sort()
+                self.dirty_new_shops.add(name) # Mark for saving on PUSH
+                
+                # Copy Logic (Local update only)
+                if source_shop:
+                    count_copied = 0
+                    for p in self.current_products:
+                        src_price = p['prices'].get(source_shop)
+                        if src_price is not None:
+                             p['prices'][name] = src_price
+                             self.dirty_prices.add((p['barcode'], name))
+                             count_copied += 1
+                    self.show_snack(f"Loja '{name}' criada (Local*). Preços copiados: {count_copied}", ft.Colors.BLUE)
+                else:
+                    self.show_snack(f"Loja '{name}' adicionada (Local*) !", ft.Colors.BLUE)
+
+                self.refresh_table()
+                close_dlg(e)
+            except Exception as ex:
+                self.show_snack(f"Erro: {ex}", ft.Colors.RED)
+
+        txt_store_name = ft.TextField(label="Nome da Loja", autofocus=True, on_submit=confirm_add_store)
+        
+        # Dropdown options
+        opts = [ft.dropdown.Option(s) for s in self.known_shops]
+        dd_copy_from = ft.Dropdown(
+            label="Copiar preços de (Opcional)",
+            options=opts,
+        )
+
+        self.dlg_modal = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Adicionar Nova Loja"),
+            content=ft.Column([txt_store_name, dd_copy_from], tight=True, height=150),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dlg),
+                ft.TextButton("Adicionar", on_click=confirm_add_store),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.overlay.append(self.dlg_modal)
+        self.dlg_modal.open = True
+        self.page.update()
+
+    def add_product_click(self, e):
+        # Direct Add: Insert line, scroll to top
+        new_barcode = f"NEW_{int(time.time())}" # Temp unique
+        new_p = {
+            'product_id': None,
+            'barcode': new_barcode, # Will be edited by user
             'marca': '',
             'categoria': '',
             'sabor': '',
-            'preco': 0.0,
-            'reviewed': True, # Mark as edited so it syncs
-            'scanned': False
+            'prices': {}
         }
-        current_products.insert(0, new_prod) # Add to top
-        refresh_table()
-        # Scroll to top
+        
+        self.current_products.insert(0, new_p)
+        # Mark dirty immediately so it gets saved as new?
+        # Ideally user edits it first.
+        # But we need to track it.
+        self.dirty_metadata.add(new_barcode)
+        
+        self.refresh_table()
+        self.products_list.scroll_to(offset=0, duration=300)
+        
+        # Ideally focus on the barcode field of the first item
+        # But we need reference. The refresh_table rebuilds controls.
+        # We can try to access controls[0] but structure is:
+        # container -> row -> [actions, txt_barcode, ...]
+        # controls[0] is the container for the first item.
         try:
-             products_list.scroll_to(offset=0, duration=500)
-        except: pass
-        show_snack("Novo produto adicionado no topo!", ft.Colors.GREEN)
+            # controls[0] is the newItem container
+            # content is Row
+            # controls[1] is txt_barcode
+             first_row_container = self.products_list.controls[0]
+             # Row controls: 0=actions_row, 1=txt_barcode
+             txt_bc = first_row_container.content.controls[1]
+             # We want to clear the 'NEW_...' text so user can type? 
+             # Or keep it as placeholder? User said "barcode prefilled" in original prompt for scan, 
+             # but here "add the line directly... like no barcode found".
+             # Let's select all text so typing replaces it?
+             txt_bc.focus()
+             # Flet TextField selection support is limited in Python API sometimes, 
+             # but focus works.
+             txt_bc.value = "" # Clear it for them
+             txt_bc.update()
+        except:
+             pass
 
-    def sync_to_dynamodb(e):
-        target = input_target_store.value
-        if not target:
-            show_snack("Defina a loja de destino!", ft.Colors.RED)
-            return
+    def process_barcode(self, barcode):
+        barcode = barcode.strip()
+        if not barcode: return
 
-        # Filter reviewed items
-        items_to_add = [p for p in current_products if p.get('reviewed', False)]
-        
-        # Check if there is anything to do
-        if not items_to_add and not deleted_products:
-            show_snack("Nada para sincronizar (apenas itens Verdes/Azuis ou Deletados são processados)!", ft.Colors.RED)
-            return
-        
-        total_add = len(items_to_add)
-        total_del = len(deleted_products)
-        
-        btn_sync.disabled = True
-        status_text.value = f"Sincronizando: {total_add} envios, {total_del} remoções..."
-        page.update()
-        
-        try:
-            # Process Deletions
-            for i, p in enumerate(deleted_products):
-                status_text.value = f"Removendo {i+1}/{total_del}: {p['barcode']}..."
-                page.update()
-                db.delete_product(p['barcode'], target)
-            
-            # Clear deleted list after success (safety?)
-            # deleted_products.clear() # Maybe don't clear yet in case functionality repeats? 
-            # Actually standard practice is to clear if successful
-            
-            # Process Additions/Updates
-            for i, p in enumerate(items_to_add):
-                status_text.value = f"Enviando {i+1}/{total_add}: {p['barcode']}..."
-                page.update()
-                db.add_product(p, target)
-                
-            show_snack(f"Sincronização Fim: {total_add} enviados, {total_del} removidos em '{target}'.")
-            
-            # Clear deletion tracking after successful sync
-            deleted_products.clear()
-            status_text.value = "Pronto."
-            
-        except Exception as ex:
-            print(ex)
-            show_snack(f"Erro durante sincronização: {ex}", ft.Colors.RED)
-            
-        btn_sync.disabled = False
-        page.update()
-    
-    # UI Elements Reference
-    dd_source_store = ft.Dropdown(
-        label="Loja de Origem",
-        width=300,
-        options=[ft.dropdown.Option(shop) for shop in db.get_shops()]
-    )
-    
-    input_target_store = ft.TextField(label="Loja de Destino (Novo ou Existente)", width=300)
-    
-    input_barcode = ft.TextField(
-        label="Bipar Produto (Foco Automático)", 
-        autofocus=True, 
-        width=400,
-        on_submit=lambda e: on_barcode_scanned(e)
-    )
-    
-    status_text = ft.Text("")
-
-    # Scrollable container for rows
-    # We use a Column inside a ListView or just a Column with scroll
-    # ListView is better for scroll_to
-    products_list = ft.ListView(
-        expand=True,
-        spacing=0, # No spacing between rows usually in a table
-        auto_scroll=False
-    )
-    
-    # Header Control
-    def header_click(idx):
-        sort_state["index"] = idx
-        sort_state["ascending"] = not sort_state["ascending"]
-        refresh_table()
-
-    # Column Widths
-    W_CODE = 200
-    W_BRAND = 150 # New Brand Column
-    W_CAT = 300   # Reduced slightly to fit brand? Or just add it. Let's adjust to keep total reasonable.
-    W_FLAV = 300
-    W_PRICE = 150
-    W_HEAD_BTN = 50 # Extra space for action header?
-
-    def show_snack(message, color=ft.Colors.GREEN):
-        page.snack_bar = ft.SnackBar(ft.Text(message), bgcolor=color)
-        page.snack_bar.open = True
-        page.update()
-        
-    def update_product_data(prod, field, value):
-        if field == 'preco':
-            try:
-                prod[field] = float(value)
-            except ValueError:
-                pass 
-        else:
-            prod[field] = value
-
-    def mark_edited(e, prod, row_control):
-        # Mark as reviewed (Green) on manual edit
-        prod['reviewed'] = True
-        prod['scanned'] = False # Clear scanned status so it becomes Green
-        
-        if row_control:
-             row_control.bgcolor = ft.Colors.GREEN_900
-             row_control.update()
-
-    def mark_as_checked(e, prod, row_control):
-        # Guard: If already Green (Reviewed manually), don't change to Blue
-        if prod.get('reviewed', False) and not prod.get('scanned', False):
-            return
-
-        # Mark as checked/scanned (Blue) on button click
-        prod['reviewed'] = True
-        prod['scanned'] = True # Force Blue status
-        
-        if row_control:
-             row_control.bgcolor = ft.Colors.BLUE_900
-             row_control.update()
-
-    def refresh_table():
-        # Handle Sorting
-        idx = sort_state["index"]
-        asc = sort_state["ascending"]
-        
-        if idx is not None:
-             keys = ['barcode', 'marca', 'categoria', 'sabor', 'preco']
-             if idx < len(keys):
-                 key = keys[idx]
-                 current_products.sort(key=lambda x: x.get(key, ""), reverse=not asc)
-
-        products_list.controls.clear()
-        
-        for p in current_products:
-            is_reviewed = p.get('reviewed', False)
-            is_scanned = p.get('scanned', False)
-            
-            # Row Color (Background)
-            row_color = None
-            if is_scanned:
-                row_color = ft.Colors.BLUE_900
-            elif is_reviewed:
-                row_color = ft.Colors.GREEN_900
-            
-            # Editable Fields
-            txt_barcode = ft.TextField(value=p['barcode'], border=ft.InputBorder.UNDERLINE, width=W_CODE)
-            txt_brand = ft.TextField(value=p.get('marca', ''), border=ft.InputBorder.UNDERLINE, width=W_BRAND)
-            txt_category = ft.TextField(value=p['categoria'], border=ft.InputBorder.UNDERLINE, width=W_CAT)
-            txt_flavor = ft.TextField(value=p['sabor'], border=ft.InputBorder.UNDERLINE, width=W_FLAV)
-            txt_price = ft.TextField(value=f"{p['preco']:.2f}", border=ft.InputBorder.UNDERLINE, width=W_PRICE)
-            
-            # Action Buttons
-            btn_check = ft.IconButton(
-                icon=ft.Icons.CHECK,
-                icon_color=ft.Colors.BLUE, # Changed to BLUE to match action
-                tooltip="Marcar como Verificado (Azul)"
-            )
-
-            btn_del = ft.IconButton(
-                icon=ft.Icons.DELETE,
-                icon_color=ft.Colors.RED,
-                tooltip="Remover",
-                on_click=lambda e, prod=p: delete_product(prod)
-            )
-
-            # Create Row Container
-            row_container = ft.Container(
-                content=ft.Row(
-                    controls=[
-                        txt_barcode,
-                        txt_brand,
-                        txt_category,
-                        txt_flavor,
-                        txt_price,
-                        ft.Container(
-                            content=ft.Row([btn_del, btn_check], spacing=0, alignment=ft.MainAxisAlignment.CENTER), 
-                            width=100, 
-                            alignment=ft.alignment.center
-                        )
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER
-                ),
-                bgcolor=row_color,
-                key=p['barcode'], 
-                padding=5
-            )
-            
-            # Use helper to bind with closure
-            def make_check_click(prod, ctrl):
-                return lambda e: mark_as_checked(e, prod, ctrl)
-            
-            btn_check.on_click = make_check_click(p, row_container)
-
-            # Bind Callbacks
-            def make_on_change(prod, field_name):
-                 return lambda e: update_product_data(prod, field_name, e.control.value)
-            
-            def make_on_blur(prod, col_ctrl):
-                return lambda e: mark_edited(e, prod, col_ctrl)
-
-            txt_barcode.on_change = make_on_change(p, 'barcode')
-            txt_barcode.on_blur = make_on_blur(p, row_container)
-            
-            txt_brand.on_change = make_on_change(p, 'marca')
-            txt_brand.on_blur = make_on_blur(p, row_container)
-
-            txt_category.on_change = make_on_change(p, 'categoria')
-            txt_category.on_blur = make_on_blur(p, row_container)
-            
-            txt_flavor.on_change = make_on_change(p, 'sabor')
-            txt_flavor.on_blur = make_on_blur(p, row_container)
-            
-            txt_price.on_change = make_on_change(p, 'preco')
-            txt_price.on_blur = make_on_blur(p, row_container)
-
-            products_list.controls.append(row_container)
-            
-        page.update()
-
-    def load_products(e):
-        source = dd_source_store.value
-        if not source:
-            show_snack("Selecione uma loja de origem!", ft.Colors.RED)
-            return
-        
-        status_text.value = "Carregando..."
-        page.update()
-        
-        try:
-            prods = db.get_all_products(shop_name=source)
-            current_products.clear()
-            current_products.extend(prods)
-            # Reset reviewed status
-            for p in current_products:
-                p['reviewed'] = False
-                p['scanned'] = False
-                
-            refresh_table()
-            status_text.value = f"{len(prods)} produtos carregados de {source}."
-            
-            # Auto-fill target if empty
-            if not input_target_store.value:
-                input_target_store.value = source
-            
-            # Lock source store/load, enable add
-            dd_source_store.disabled = True
-            btn_load.disabled = True
-            btn_add.disabled = False
-                
-        except Exception as ex:
-            status_text.value = f"Erro: {ex}"
-            print(ex)
-            
-        page.update()
-
-    def on_barcode_scanned(e):
-        barcode = input_barcode.value.strip()
-        if not barcode:
-            return
-        
-        found_data = None
-        is_green_preserved = False
-
-        for p in current_products:
+        # 1. Search in Local List
+        found_idx = -1
+        for i, p in enumerate(self.current_products):
             if p['barcode'] == barcode:
-                # Logic: 
-                # If it's already reviewed (Green) and NOT scanned (Blue), keep it Green.
-                # Otherwise, mark as scanned (Blue).
-                if p.get('reviewed', False) and not p.get('scanned', False):
-                    # It is Green, keep it Green (don't set scanned=True)
-                    # We still set found_data so we scroll to it
-                    is_green_preserved = True
-                else:
-                    # Not green, or already blue -> make it Blue
-                    p['reviewed'] = True
-                    p['scanned'] = True 
-                
-                found_data = p
+                found_idx = i
                 break
         
-        if found_data:
-            # Find the control in the ListView
-            found_control = None
-            found_index = -1
+        if found_idx != -1:
+            self.show_snack(f"Produto localizado: {barcode}", ft.Colors.CYAN)
             
-            for i, ctrl in enumerate(products_list.controls):
-                if ctrl.key == barcode:
-                    found_control = ctrl
-                    found_index = i
-                    break
-            
-            # Determine target color based on actual state
-            target_color = ft.Colors.GREEN_900 if is_green_preserved else ft.Colors.BLUE_900
-            msg_text = f"Produto editado ({barcode}) localizado!" if is_green_preserved else f"Produto {barcode} verificado!"
-
-            if found_control:
-                # Scroll FIRST (User Request)
-                row_height = 57 
-                scroll_offset = found_index * row_height
+            try:
+                # Update selection state
+                previous = self.last_searched_barcode
+                self.last_searched_barcode = barcode
                 
-                try:
-                    products_list.scroll_to(offset=scroll_offset, duration=0)
-                except Exception as ex:
-                    print(f"Scroll error: {ex}")
-
-                # Flash Effect: Set to White first
-                found_control.bgcolor = ft.Colors.WHITE
-                found_control.update()
+                # Update visuals for both (Previous - remove border, New - add border)
+                if previous and previous != barcode:
+                    self.update_row_visuals(previous)
                 
-                # Brief pause for the flash
-                time.sleep(0.2)
+                self.update_row_visuals(barcode) # Updates new one
+
+                # Scroll
+                self.products_list.scroll_to(offset=found_idx * 55, duration=500)
                 
-                # Update color (ensure it matches the state)
-                found_control.bgcolor = target_color
-                found_control.update()
-                    
-                show_snack(msg_text)
-            else:
-                # Fallback
-                refresh_table()
-                # Find index again
-                for i, p in enumerate(current_products):
-                    if p['barcode'] == barcode:
-                         row_height = 57
-                         scroll_offset = i * row_height
-                         try:
-                             # Scroll FIRST
-                             products_list.scroll_to(offset=scroll_offset, duration=0)
-
-                             # Flash behavior on fallback (might be slower but consistent)
-                             products_list.controls[i].bgcolor = ft.Colors.WHITE
-                             products_list.update()
-                             time.sleep(0.2)
-                             
-                             products_list.controls[i].bgcolor = target_color
-                             products_list.update()
-                         except: pass
-                         break
-                
-                show_snack(msg_text)
-                
-        else:
-            show_snack(f"Produto {barcode} não encontrado na lista!", ft.Colors.RED)
-            
-        input_barcode.value = ""
-        input_barcode.focus()
-
-    def delete_product(prod):
-        if prod in current_products:
-            deleted_products.append(prod)
-            current_products.remove(prod)
-            refresh_table()
-
-    def delete_all_products(e):
-        deleted_products.extend(current_products)
-        current_products.clear()
-        refresh_table()
-
-    def sync_to_dynamodb(e):
-        target = input_target_store.value.strip()
-        source = dd_source_store.value
-        
-        if not target:
-            show_snack("Defina a loja de destino!", ft.Colors.RED)
+            except Exception as ex:
+                print(f"Scroll/Highlight error: {ex}")
             return
 
-        # Check existing shops
-        existing_shops = db.get_shops()
-        is_new_store = target not in existing_shops
-        
-        # VALIDATION: Target must be Source OR New. cannot be a different existing store.
-        if (target != source) and (not is_new_store):
-             show_snack(f"ERRO: Loja destino '{target}' já existe e é diferente da origem.", ft.Colors.RED)
-             print(f"Sync Blocked: Target '{target}' exists and != Source '{source}'")
-             return
-
-        items_to_add = []
-        if is_new_store:
-            # New Store: Upload EVERYTHING
-            items_to_add = list(current_products)
-            show_snack(f"Loja nova detected. Preparando migração completa ({len(items_to_add)} produtos)...", ft.Colors.BLUE)
-        else:
-            # Existing Store (Must be Source): Sync only changes
-            items_to_add = [p for p in current_products if p.get('reviewed', False)]
-
-        # Check if there is anything to do
-        if not items_to_add and not deleted_products:
-            show_snack("Nada para sincronizar (apenas itens Verdes/Azuis ou Deletados são processados)!", ft.Colors.RED)
-            return
-        
-        total_add = len(items_to_add)
-        total_del = len(deleted_products)
-        
-        btn_sync.disabled = True
-        status_text.value = f"Sincronizando: {total_add} envios, {total_del} remoções..."
-        page.update()
-        
+        # 2. Not Found -> Create
         try:
-            # Process Deletions
-            for i, p in enumerate(deleted_products):
-                status_text.value = f"Removendo {i+1}/{total_del}: {p['barcode']}..."
-                page.update()
-                db.delete_product(p['barcode'], target)
+            template = self.db.get_template_by_barcode(barcode)
+            if template:
+                new_p = {
+                    'product_id': template['product_id'],
+                    'barcode': barcode,
+                    'marca': template.get('marca',''),
+                    'categoria': template.get('categoria',''),
+                    'sabor': template.get('sabor',''),
+                    'prices': {}
+                }
+                self.show_snack("Produto importado do Cloud.", ft.Colors.CYAN)
+            else:
+                new_p = {
+                    'product_id': None,
+                    'barcode': barcode,
+                    'marca': '',
+                    'categoria': '',
+                    'sabor': '',
+                    'prices': {}
+                }
+                self.show_snack(f"Novo produto criado: {barcode}", ft.Colors.GREEN)
             
-            # Process Additions/Updates
-            for i, p in enumerate(items_to_add):
-                status_text.value = f"Enviando {i+1}/{total_add}: {p['barcode']}..."
-                page.update()
-                db.add_product(p, target)
-                
-            show_snack(f"Sincronização Fim: {total_add} enviados, {total_del} removidos em '{target}'.")
+            self.current_products.insert(0, new_p)
+            self.dirty_metadata.add(barcode) 
             
-            # Clear deletion tracking after successful sync
-            deleted_products.clear()
-            status_text.value = "Pronto."
+            self.refresh_table()
             
-            # If it was a new store, we might want to reload the dropdown source list, 
-            # but db.get_shops() is called dynamically so it should be fine if we add logic to add shop later.
-            
-        except Exception as ex:
-            print(ex)
-            show_snack(f"Erro durante sincronização: {ex}", ft.Colors.RED)
-            
-        btn_sync.disabled = False
-        page.update()
+            # Scroll to top (Offset 0)
+            self.products_list.scroll_to(offset=0, duration=300)
 
-    # Layout
-    
-    btn_load = ft.ElevatedButton("Carregar Produtos", on_click=load_products)
-    btn_add = ft.ElevatedButton("Adicionar Produto", icon=ft.Icons.ADD, on_click=add_new_product, bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, disabled=True)
-    btn_sync = ft.ElevatedButton("Enviar para DynamoDB", on_click=sync_to_dynamodb, bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE)
-    
-    header = ft.Row(
-        controls=[
-            dd_source_store,
-            btn_load,
-            btn_add,
-            ft.VerticalDivider(width=20),
-            input_target_store,
-            btn_sync
-        ],
-        alignment=ft.MainAxisAlignment.START,
-    )
-    
-    search_area = ft.Row(
-        controls=[input_barcode],
-        alignment=ft.MainAxisAlignment.CENTER
-    )
-    
-    # Header Row (Defined late to access callbacks)
-    header_row = ft.Row(
-        controls=[
-            ft.Container(ft.TextButton("Código", on_click=lambda e: header_click(0)), width=W_CODE),
-            ft.Container(ft.TextButton("Marca", on_click=lambda e: header_click(1)), width=W_BRAND),
-            ft.Container(ft.TextButton("Categoria", on_click=lambda e: header_click(2)), width=W_CAT),
-            ft.Container(ft.TextButton("Sabor", on_click=lambda e: header_click(3)), width=W_FLAV),
-            ft.Container(ft.TextButton("Preço", on_click=lambda e: header_click(4)), width=W_PRICE),
-            ft.Container(
-                ft.IconButton(
-                    icon=ft.Icons.DELETE_SWEEP, 
-                    icon_color=ft.Colors.RED, 
-                    tooltip="Limpar Tudo (Locamente)",
-                    on_click=delete_all_products
-                ), 
-                width=100,
-                alignment=ft.alignment.center
-            ),
-        ],
-        alignment=ft.MainAxisAlignment.CENTER # Center the header
-    )
-    
-    page.add(
-        ft.Text("Gerenciador de Lojas & Produtos", size=24, weight=ft.FontWeight.BOLD),
-        header,
-        ft.Divider(),
-        search_area,
-        status_text,
-        header_row, # Add Header Row
-        products_list # Add ListView
-    )
+        except Exception as ex:
+            self.show_snack(f"Erro: {ex}", ft.Colors.RED)
+
+    def search_submit(self, e):
+        bc = self.input_search.value
+        self.process_barcode(bc)
+        self.input_search.value = ""
+        self.input_search.focus()
+        self.page.update()
+
+    def build_ui(self):
+        self.btn_load = ft.ElevatedButton("PULL (Baixar)", icon=ft.Icons.DOWNLOAD, on_click=self.load_matrix)
+        self.btn_save = ft.ElevatedButton("PUSH (Salvar Editados)", icon=ft.Icons.UPLOAD, on_click=self.save_changes, bgcolor=ft.Colors.BLUE_900, color=ft.Colors.WHITE)
+        
+        self.btn_add_store = ft.ElevatedButton("Nova Loja", icon=ft.Icons.STORE, on_click=self.add_store_click)
+        self.btn_add_prod = ft.ElevatedButton("Novo item manual", icon=ft.Icons.ADD, on_click=self.add_product_click)
+
+        self.input_search = ft.TextField(
+            label="Pesquisar / Criar (Código de Barras)", 
+            expand=True, 
+            on_submit=self.search_submit, 
+            autofocus=True,
+            prefix_icon=ft.Icons.QR_CODE_SCANNER,
+            bgcolor=ft.Colors.GREY_900
+        )
+
+        self.status_text = ft.Text("Pronto.")
+        
+        self.header_container = ft.Column() 
+        self.products_list = ft.ListView(expand=True, spacing=5, item_extent=50)
+
+        self.page.add(
+            ft.Row([
+                ft.Text("Gerenciador de Estoque", size=24, weight=ft.FontWeight.BOLD),
+                ft.Container(expand=True), 
+                self.btn_add_prod,
+                self.btn_add_store,
+                ft.VerticalDivider(),
+                self.btn_load,
+                self.btn_save
+            ]),
+            ft.Divider(),
+            ft.Row([self.input_search], alignment=ft.MainAxisAlignment.CENTER),
+            self.status_text,
+            self.header_container,
+            self.products_list
+        )
+
+def main(page: ft.Page):
+    StoreManagerApp(page)
 
 if __name__ == "__main__":
     ft.app(target=main)

@@ -245,7 +245,8 @@ class SyncManager:
             try:
                 # No URL needed
                 client = SyncClient(self.app.product_db)
-                result = client.sync()
+                shop_name = getattr(self.app, 'shop', None)
+                result = client.sync(shop_name=shop_name)
                 print(f"Sync result: {result}")
                 
                 if not silent:

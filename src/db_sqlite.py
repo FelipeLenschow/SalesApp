@@ -2,6 +2,7 @@
 import sqlite3
 import json
 from datetime import datetime
+import os
 
 class Database:
     def __init__(self, db_path='database.db'):
@@ -12,320 +13,389 @@ class Database:
         return sqlite3.connect(self.db_path)
 
     def init_db(self):
-        create_tables_sql = """
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            barcode TEXT NOT NULL,
-            category TEXT,
-            flavor TEXT,
-            UNIQUE(barcode, flavor, category)
-        );
+        # We are moving to V3. If we detect old tables, we might want to drop them or just ignore.
+        # Ideally, for a clean offline cache, we can just recreate the products table.
+        try:
+            with self.get_connection() as conn:
+                # Create SALES table (Legacy compatible)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sales (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        final_price REAL,
+                        payment_method TEXT,
+                        products_json TEXT
+                    );
+                """)
+                
+                # CONFIG table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS config (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    );
+                """)
 
-        CREATE TABLE IF NOT EXISTS product_prices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER,
-            price REAL,
-            UNIQUE(product_id),
-            FOREIGN KEY(product_id) REFERENCES products(id)
-        );
+                # PRODUCTS table (V3 Cache - scoped to ONE shop)
+                # We drop the old one if it doesn't have product_id, or just generic "products"
+                # Let's check if product_id exists
+                cursor = conn.execute("PRAGMA table_info(products)")
+                columns = [info[1] for info in cursor.fetchall()]
+                
+                if 'product_id' not in columns:
+                    # Legacy table or doesn't verify. Drop and recreate for V3 Cache.
+                    print("Updating Local DB Schema to V3...")
+                    conn.execute("DROP TABLE IF EXISTS product_prices")
+                    conn.execute("DROP TABLE IF EXISTS products")
+                
+                # Check for sync_status (Migration 3.1)
+                if 'sync_status' not in columns:
+                     # We can just alter table if product_id exists
+                     try:
+                         # Attempt to add column if table exists (will fail if dropped above, which is fine)
+                         conn.execute("ALTER TABLE products ADD COLUMN sync_status TEXT DEFAULT 'synced'")
+                     except:
+                         pass
 
-        CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            final_price REAL,
-            payment_method TEXT,
-            products_json TEXT
-        );
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        product_id TEXT PRIMARY KEY,
+                        barcode TEXT,
+                        brand TEXT,
+                        category TEXT,
+                        flavor TEXT,
+                        price REAL,
+                        metadata_json TEXT,
+                        sync_status TEXT DEFAULT 'synced'
+                    );
+                """)
+                # Check for prices_json (Migration 3.2 - Multi-shop cache)
+                if 'prices_json' not in columns:
+                     try:
+                         conn.execute("ALTER TABLE products ADD COLUMN prices_json TEXT DEFAULT '{}'")
+                     except:
+                         pass
 
-        CREATE TABLE IF NOT EXISTS config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        product_id TEXT PRIMARY KEY,
+                        barcode TEXT,
+                        brand TEXT,
+                        category TEXT,
+                        flavor TEXT,
+                        price REAL,
+                        prices_json TEXT DEFAULT '{}',
+                        metadata_json TEXT,
+                        sync_status TEXT DEFAULT 'synced'
+                    );
+                """)
+                # Index for barcode search
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_barcode ON products(barcode)")
+                
+        except sqlite3.Error as e:
+            print(f"Error initializing local database: {e}")
+
+    def replace_all_products(self, products_list):
+        """
+        Replaces the entire local cache with the provided list.
+        Expects list of dicts: {product_id, barcode, brand, category, flavor, prices: {Shop: Price}}
         """
         try:
             with self.get_connection() as conn:
-                conn.executescript(create_tables_sql)
+                conn.execute("DELETE FROM products")
                 
-                # Migration: Add sync_status if not exists
+                unique_shops = set()
+                data_tuples = []
+                for p in products_list:
+                    # Clean/Normalize data
+                    p_id = p.get('product_id')
+                    barcode = p.get('barcode')
+                    # Handle both key styles
+                    brand = p.get('marca') or p.get('brand', '')
+                    category = p.get('categoria') or p.get('category', '')
+                    flavor = p.get('sabor') or p.get('flavor', '')
+                    
+                    # Store all prices
+                    prices = p.get('prices', {})
+                    unique_shops.update(prices.keys())
+                    prices_json = json.dumps(prices)
+                    
+                    # Set 'price' to 0 or arbitrary value, as it depends on shop
+                    price = 0.0
+                    
+                    metadata = json.dumps(p)
+                    # Sync status is 'synced' because we just downloaded it
+                    sync_status = 'synced'
+                    
+                    data_tuples.append((p_id, barcode, brand, category, flavor, price, prices_json, metadata, sync_status))
+                
+                conn.executemany("""
+                    INSERT INTO products (product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, data_tuples)
+
+                # Save cached shops
                 try:
-                    conn.execute("ALTER TABLE products ADD COLUMN sync_status TEXT DEFAULT 'synced'")
-                except sqlite3.OperationalError:
-                     # Column likely already exists
-                     pass
-        except sqlite3.Error as e:
-            print(f"Error initializing database: {e}")
-
-    def set_config(self, key, value):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
-        except sqlite3.Error as e:
-            print(f"Error setting config: {e}")
-
-    def get_config(self, key):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
-                row = cursor.fetchone()
-                return row[0] if row else None
-        except sqlite3.Error as e:
-            print(f"Error getting config: {e}")
-            return None
-
-    def reset_config(self, key):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM config WHERE key = ?", (key,))
-        except sqlite3.Error as e:
-            print(f"Error resetting config: {e}")
-
-    def add_product(self, product_info, shop_name, sync_status='synced'):
-        
-        barcode = product_info['barcode']
-        category = product_info['categoria']
-        flavor = product_info['sabor']
-        price = product_info['preco']
-
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-
-                # Get or Insert Product (Global Attributes)
-                cursor.execute("""
-                    INSERT INTO products (barcode, category, flavor, sync_status)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(barcode, flavor, category) DO UPDATE SET
-                    sync_status=excluded.sync_status
-                """, (barcode, category, flavor, sync_status))
+                    shops_list = sorted(list(unique_shops))
+                    conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('cached_shops', ?)", (json.dumps(shops_list),))
+                except Exception as e:
+                    print(f"Error caching shops: {e}")
                 
-                # Retrieve product_id
-                cursor.execute("SELECT id FROM products WHERE barcode = ? AND category = ? AND flavor = ?", (barcode, category, flavor))
+        except sqlite3.Error as e:
+            print(f"Error replacing local cache: {e}")
+
+    # --- Read Methods (GUI Usage) ---
+
+    def get_product_info(self, product_id, shop_name=None):
+        """Local lookup."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products WHERE product_id = ?", (product_id,))
                 row = cursor.fetchone()
                 if row:
-                     product_id = row[0]
-                else:
-                     # Fallback if something weird happens, though insert/update should ensure it exists
-                     # Or maybe it existed but attributes differ? 
-                     # For now assuming unique constraint holds
-                     return
-
-                # Insert or Update Price
-                cursor.execute("""
-                    INSERT INTO product_prices (product_id, price)
-                    VALUES (?, ?)
-                    ON CONFLICT(product_id) DO UPDATE SET
-                    price=excluded.price
-                """, (product_id, price))
-                
+                    return self._row_to_dict(row, shop_name)
         except sqlite3.Error as e:
-            print(f"Error adding product: {e}")
-            raise e
-
-    def get_products_dataframe(self):
-        """Mock method for compatibility - returns empty list."""
-        return []
-
-    def get_products_by_barcode_and_shop(self, barcode, shop_name):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                query = """
-                SELECT p.barcode, p.category, p.flavor, pp.price, p.id
-                FROM products p
-                JOIN product_prices pp ON p.id = pp.product_id
-                WHERE p.barcode = ?
-                """
-                cursor.execute(query, (barcode,))
-                rows = cursor.fetchall()
-                
-                data = []
-                for row in rows:
-                    data.append({
-                        ('Todas', 'Codigo de Barras'): row[0],
-                        ('Todas', 'Categoria'): row[1],
-                        ('Todas', 'Sabor'): row[2],
-                        (shop_name, 'Preco'): row[3],
-                        ('Metadata', 'Product ID'): row[4]
-                    })
-                return data
-        except sqlite3.Error as e:
-            print(f"Error fetching products: {e}")
-            return []
-
-    def get_product_info(self, product_id, shop_name):
-        """Fetch product details by ID."""
-        try:
-            try:
-                product_id = int(product_id)
-            except:
-                pass
-            
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                query = """
-                SELECT p.barcode, p.category, p.flavor, pp.price
-                FROM products p
-                JOIN product_prices pp ON p.id = pp.product_id
-                WHERE p.id = ?
-                """
-                cursor.execute(query, (product_id,))
-                row = cursor.fetchone()
-                if row:
-                     return {
-                        ('Todas', 'Codigo de Barras'): row[0],
-                        ('Todas', 'Categoria'): row[1],
-                        ('Todas', 'Sabor'): row[2],
-                        (shop_name, 'Preco'): row[3],
-                        ('Metadata', 'Product ID'): product_id
-                    }
-                else:
-                    # print(f"DEBUG: Product not found in DB for id={product_id} shop={shop_name}")
-                    pass
-        except sqlite3.Error as e:
-            print(f"Error in get_product_info: {e}")
-            pass
+            print(f"Error fetching product info: {e}")
         return None
 
-    def search_products(self, search_term, shop_name):
+    def get_products_by_barcode_and_shop(self, barcode, shop_name=None):
+        """Local lookup by barcode."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                # Simple wildcard search
-                term = f"%{search_term}%"
-                query = """
-                SELECT p.barcode, p.category, p.flavor, pp.price, p.id
-                FROM products p
-                JOIN product_prices pp ON p.id = pp.product_id
-                WHERE 
-                    p.barcode LIKE ? OR 
-                    p.category LIKE ? OR 
-                    p.flavor LIKE ? OR
-                    CAST(pp.price AS TEXT) LIKE ?
-                
-                """
-                cursor.execute(query, (term, term, term, term))
+                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products WHERE barcode = ?", (barcode,))
                 rows = cursor.fetchall()
-                
-                data = []
-                for row in rows:
-                    data.append({
-                        ('Todas', 'Codigo de Barras'): row[0],
-                        ('Todas', 'Categoria'): row[1],
-                        ('Todas', 'Sabor'): row[2],
-                        (shop_name, 'Preco'): row[3],
-                         ('Metadata', 'Product ID'): row[4]
-                    })
-                return data
+                results = []
+                for r in rows:
+                    prod = self._row_to_dict(r, shop_name)
+                    # Filter if shop_name provided and price exists?
+                    # Or just return whatever price we resolved to (could be 0)
+                    # For V3 App flow, it expects result only if valid for shop?
+                    # The get_all was sending all products, app handles logic.
+                    # But if we resolve price to 0, app might show it.
+                    results.append(prod)
+                return results
+                # return [self._row_to_dict(r, shop_name) for r in rows]
         except sqlite3.Error as e:
-            print(f"Error searching products: {e}")
+            print(f"Error fetching by barcode: {e}")
+        return []
+
+    def search_products(self, term, shop_name=None):
+        """Local wildcard search."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                t = f"%{term}%"
+                cursor.execute("""
+                    SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products 
+                    WHERE barcode LIKE ? OR category LIKE ? OR flavor LIKE ? OR brand LIKE ?
+                """, (t, t, t, t))
+                rows = cursor.fetchall()
+                return [self._row_to_dict(r, shop_name) for r in rows]
+        except sqlite3.Error as e:
+            print(f"Error searching: {e}")
+        return []
+        
+    def get_all_products_local(self):
+        """Returns all products from local cache for sync comparison."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products")
+                rows = cursor.fetchall()
+                return [self._row_to_dict(r) for r in rows]
+        except sqlite3.Error as e:
+            print(f"Error fetching all products: {e}")
             return []
+
+    def _row_to_dict(self, row, shop_name=None):
+        # Map tuple back to dict expected by GUI (Flat structure)
+        # Table: product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status
+        # Index: 0           1        2      3         4       5      6            7              8
+        
+        # Check column count to handle runtime migration
+        has_prices = len(row) > 8 
+
+        def safe_json_loads(val):
+            try:
+                if not val: return {}
+                return json.loads(val)
+            except:
+                return {}
+        
+        metadata = {}
+        if has_prices:
+             metadata = safe_json_loads(row[7])
+        elif len(row) > 6:
+             metadata = safe_json_loads(row[6])
+
+        d = {
+            'product_id': row[0],
+            'barcode': row[1],
+            'marca': row[2],
+            'categoria': row[3],
+            'sabor': row[4],
+            'metadata': metadata
+        }
+        
+        # Price Resolution
+        base_price = row[5] # Default column
+        prices_json = {}
+        if has_prices:
+            prices_json = safe_json_loads(row[6])
+        
+        # If shop_name provided, try to find specific price
+        final_price = base_price
+        if shop_name and prices_json:
+            # NORMALIZATION DEBUG
+            # Try exact match, then try replacing underscores/spaces
+            if shop_name in prices_json:
+                final_price = float(prices_json[shop_name])
+            else:
+                 # Try variations?
+                 print(f"DEBUG: Shop '{shop_name}' not in prices: {list(prices_json.keys())}")
+                 # Fallback: maybe the key has underscores?
+                 shop_u = shop_name.replace(" ", "_")
+                 if shop_u in prices_json:
+                     final_price = float(prices_json[shop_u])
+                 else:
+                     final_price = 0.0
+
+        d['preco'] = final_price
+        
+        if has_prices:
+            d['sync_status'] = row[8]
+        elif len(row) > 7:
+             d['sync_status'] = row[7]
+        else:
+            d['sync_status'] = 'synced'
+
+        return d
+
+    # --- Sales Methods ---
 
     def record_sale(self, final_price, payment_method, products_dict):
         try:
-            # Basic type conversion if needed (removed numpy dependency)
-            def convert_simple(obj):
-                if isinstance(obj, dict):
-                    return {str(k): convert_simple(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [convert_simple(i) for i in obj]
-                # Assuming no numpy types passed in anymore or standard types cover it
-                return obj
-
-            clean_products = convert_simple(products_dict)
-            products_json = json.dumps(clean_products)
-            
+            # Products dict is {product_id: details}
+            products_json = json.dumps(products_dict)
             with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO sales (timestamp, final_price, payment_method, products_json)
-                    VALUES (?, ?, ?, ?)
-                """, (datetime.now(), final_price, payment_method, products_json))
+                conn.execute("""
+                    INSERT INTO sales (final_price, payment_method, products_json)
+                    VALUES (?, ?, ?)
+                """, (final_price, payment_method, products_json))
         except sqlite3.Error as e:
             print(f"Error recording sale: {e}")
             raise e
 
-    def get_sales_history(self):
+    def get_sales_history(self, shop_name=None, limit=50):
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                query = "SELECT timestamp, final_price, payment_method, products_json FROM sales ORDER BY timestamp DESC"
-                cursor.execute(query)
+                cursor.execute("SELECT timestamp, final_price, payment_method, products_json FROM sales ORDER BY timestamp DESC LIMIT ?", (limit,))
                 rows = cursor.fetchall()
                 
                 history = []
                 for row in rows:
                     ts = row[0]
-                    # SQLite stores datetime as string generally or we get it as string/obj
-                    # If it's a string 'YYYY-MM-DD HH:MM:SS...'
+                    # Parse timestamp (SQLite string)
                     try:
-                        dt_obj = datetime.strptime(str(ts).split('.')[0], '%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        try:
-                            dt_obj = datetime.strptime(str(ts), '%Y-%m-%d %H:%M:%S')
-                        except:
-                            # Fallback
-                            dt_obj = datetime.now()
+                         dt = datetime.strptime(ts.split('.')[0], '%Y-%m-%d %H:%M:%S')
+                    except:
+                         dt = datetime.now()
 
                     history.append({
-                        'timestamp': ts,
-                        'Data': dt_obj.strftime('%Y-%m-%d'),
-                        'Horario': dt_obj.strftime('%H:%M:%S'),
+                        'Data': dt.strftime('%Y-%m-%d'),
+                        'Horario': dt.strftime('%H:%M:%S'),
                         'Preco Final': row[1],
                         'Metodo de pagamento': row[2],
-                        'Produtos': row[3]
+                        'Produtos': row[3],
+                        'Shop': 'Local', # Metadata
+                        'timestamp': ts
                     })
-                
                 return history
-        except Exception as e:
-            print(f"Error fetching history: {e}")
+        except sqlite3.Error as e:
+            print(f"Error history: {e}")
             return []
 
-    def get_all_products_local(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                query = """
-                SELECT p.barcode, p.category, p.flavor, pp.price, p.sync_status
-                FROM products p
-                JOIN product_prices pp ON p.id = pp.product_id
-                """
-                cursor.execute(query)
-                rows = cursor.fetchall()
-                products = []
-                for row in rows:
-                    products.append({
-                        'barcode': row[0],
-                        'categoria': row[1],
-                        'sabor': row[2],
-                        'preco': row[3],
-                        'sync_status': row[4] if len(row) > 4 else 'synced'
-                    })
-                return products
-        except sqlite3.Error as e:
-            print(f"Error fetching all products: {e}")
-            return []
+    # --- Config ---
+    def set_config(self, key, value):
+        with self.get_connection() as conn:
+            conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
 
-    def delete_product(self, barcode):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                # Find ID first
-                cursor.execute("SELECT id FROM products WHERE barcode = ?", (barcode,))
-                row = cursor.fetchone()
-                if row:
-                    prod_id = row[0]
-                    cursor.execute("DELETE FROM product_prices WHERE product_id = ?", (prod_id,))
-                    cursor.execute("DELETE FROM products WHERE id = ?", (prod_id,))
-        except sqlite3.Error as e:
-            print(f"Error deleting product: {e}")
+    def get_config(self, key):
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+            return row[0] if row else None
 
+    def get_shops(self):
+        try:
+            val = self.get_config('cached_shops')
+            if val:
+                return json.loads(val)
+        except:
+             pass
+        return []
+            
+    
+    def add_product(self, product_info, shop_name=None, sync_status='modified'):
+        """
+        Updates or Adds a product to the LOCAL cache.
+        This allows offline editing.
+        Changes are local until a Push Sync occurs.
+        sync_status: 'modified' (default, needs upload), 'synced' (from cloud)
+        """
+        try:
+            p_id = product_info.get('product_id')
+            # Generate UUID if missing (Offline creation)
+            if not p_id:
+                import uuid
+                p_id = str(uuid.uuid4())
+                product_info['product_id'] = p_id
+
+            barcode = product_info.get('barcode')
+            brand = product_info.get('marca') or product_info.get('brand', '')
+            category = product_info.get('categoria') or product_info.get('category', '')
+            flavor = product_info.get('sabor') or product_info.get('flavor', '')
+            price = product_info.get('preco') or product_info.get('price', 0.0)
+            
+            # Ensure price is float
+            try:
+                price = float(price)
+            except:
+                price = 0.0
+
+            # Update dictionary for metadata consistency
+            product_info['preco'] = price
+            product_info['marca'] = brand
+            product_info['categoria'] = category
+            product_info['sabor'] = flavor
+            
+            metadata = json.dumps(product_info)
+            
+            with self.get_connection() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO products (product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (p_id, barcode, brand, category, flavor, price, '{}', metadata, sync_status))
+                
+            return p_id
+        except sqlite3.Error as e:
+            print(f"Error adding product locally: {e}")
+            raise e 
+    
     def mark_product_synced(self, barcode):
+        """Updates the status of a product to 'synced'."""
         try:
-             with self.get_connection() as conn:
+            with self.get_connection() as conn:
                 conn.execute("UPDATE products SET sync_status = 'synced' WHERE barcode = ?", (barcode,))
         except sqlite3.Error as e:
-             print(f"Error marking product synced: {e}")
-
+            print(f"Error marking product synced: {e}")
+            
+    def delete_product(self, barcode):
+        """Hard delete of a product (usually after sync deletion confirmation)."""
+        try:
+            with self.get_connection() as conn:
+                conn.execute("DELETE FROM products WHERE barcode = ?", (barcode,))
+        except sqlite3.Error as e:
+            print(f"Error deleting product: {e}")
