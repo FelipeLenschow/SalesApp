@@ -508,6 +508,14 @@ class ProductApp:
                     on_click=lambda e, row=product_id: self.editor.open(product_id=row)
                 )
                 product_row.controls.insert(3, edit_button)
+            else:
+                 # Spacer to keep alignment
+                 spacer = ft.IconButton(
+                    icon=ft.Icons.EDIT,
+                    icon_color=ft.Colors.TRANSPARENT,
+                    disabled=True
+                 )
+                 product_row.controls.insert(3, spacer)
 
             # Add row to container
             self.widgets_vendas.controls.append(product_row)
