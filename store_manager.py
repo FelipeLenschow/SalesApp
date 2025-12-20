@@ -3,6 +3,7 @@ from src.aws_db import Database
 import src.db_sqlite as local_db
 import time
 import threading
+import json
 from datetime import datetime
 
 class StoreManagerApp:
@@ -42,6 +43,10 @@ class StoreManagerApp:
 
         # Search Indicator
         self.last_searched_barcode = None
+        
+        # Sorting State
+        self.sort_column = 'barcode' # Default sort
+        self.sort_reverse = False
 
         # Deferred Operations
         self.dirty_new_shops = set()
@@ -259,16 +264,56 @@ class StoreManagerApp:
 
 
 
+
+    def sort_data(self, key):
+        if self.sort_column == key:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_column = key
+            self.sort_reverse = False
+            
+        self.refresh_table()
+
     def refresh_table(self):
+        # 0. Apply Sort
+        def get_sort_val(item):
+            col = self.sort_column
+            if col.startswith('shop:'):
+                s_name = col.split(':', 1)[1]
+                return item['prices'].get(s_name, 0.0)
+            return item.get(col, '')
+
+        self.current_products.sort(key=get_sort_val, reverse=self.sort_reverse)
+
         # 1. Rebuild Headers (Static Row)
         self.header_container.controls.clear()
         
+        def create_header_btn(label, key, width, color=None):
+            icon = None
+            if self.sort_column == key:
+                icon = ft.Icons.ARROW_DOWNWARD if self.sort_reverse else ft.Icons.ARROW_UPWARD
+            
+            return ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Text(label, weight=ft.FontWeight.BOLD, color=color, text_align=ft.TextAlign.CENTER),
+                        ft.Icon(icon, size=16, color=color) if icon else ft.Container()
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=5
+                ),
+                width=width,
+                on_click=lambda e: self.sort_data(key),
+                ink=True,
+                padding=5
+            )
+
         header_controls = [
             ft.Text("Ações", width=80, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
-            ft.Text("Código", width=self.W_CODE, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
-            ft.Text("Marca", width=self.W_TEXT, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
-            ft.Text("Categoria", width=self.W_CAT, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
-            ft.Text("Sabor", width=self.W_FLAVOR, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            create_header_btn("Código", "barcode", self.W_CODE),
+            create_header_btn("Marca", "marca", self.W_TEXT),
+            create_header_btn("Categoria", "categoria", self.W_CAT),
+            create_header_btn("Sabor", "sabor", self.W_FLAVOR),
         ]
         
         for shop in self.known_shops:
@@ -276,7 +321,8 @@ class StoreManagerApp:
             is_new = shop in self.dirty_new_shops
             color = ft.Colors.BLUE if is_new else None
             
-            # Just simple text, no menu
+            # header_controls.append(create_header_btn(shop, f"shop:{shop}", self.W_PRICE, color))
+            # Disabled sorting for shops as per request
             header_controls.append(ft.Text(shop, width=self.W_PRICE, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, color=color))
             
         self.header_container.controls.append(ft.Row(controls=header_controls))
@@ -423,7 +469,12 @@ class StoreManagerApp:
                 s_name = item.get('shop_name')
                 
                 # Check for shop name being None (if unlisted)
-                if not s_name: continue 
+                # FIX: If s_name is empty, it might be a new product without prices yet.
+                # We still want to add it to local DB to update metadata.
+                # But add_product needs a shop_name to update price? 
+                # If s_name is None/Empty, we just pass None.
+                
+                if not s_name: s_name = None
                 
                 info = {
                     'product_id': item['product_id'],
@@ -455,10 +506,11 @@ class StoreManagerApp:
                  cloud_shops = self.db.get_shops()
                  for s in cloud_shops:
                      if s not in shops: shops.append(s)
-            
             shops.sort()
             self.known_shops.clear()
             self.known_shops.extend(shops)
+            
+            print(f"DEBUG: Known Shops: {self.known_shops}") # DEBUG
             
             # Fetch ALL local for display
             flat_products = self.local_db.get_all_products_local()
@@ -470,9 +522,33 @@ class StoreManagerApp:
                 
                 if bc not in pivot_map:
                     p_id = item.get('product_id')
+                    
+                    # Debug Raw
+                    if bc == '7894900681017':
+                         print(f"DEBUG RAW: Barcode {bc} prices_json val: {item.get('prices_json')}, type: {type(item.get('prices_json'))}")
+
                     try:
-                        prices_map = json.loads(item.get('prices_json', '{}')) if isinstance(item.get('prices_json'), str) else item.get('prices_json', {})
-                    except:
+                        p_json = item.get('prices_json')
+                        if isinstance(p_json, dict):
+                            prices_map = p_json
+                        elif isinstance(p_json, str):
+                            if not p_json or p_json == 'None':
+                                prices_map = {}
+                            else:
+                                try:
+                                    prices_map = json.loads(p_json)
+                                except json.JSONDecodeError as jde:
+                                    print(f"JSON Error for {bc}: {jde}. Content: {p_json}")
+                                    prices_map = {}
+                        else:
+                            prices_map = {}
+
+                        # Debug first item
+                        if bc == '7894900681017' or (len(pivot_map) == 0 and len(prices_map) > 0):
+                             print(f"DEBUG: Parsed prices for {bc}: {prices_map}")
+
+                    except Exception as ex:
+                        print(f"General Error parsing prices for {bc}: {ex}")
                         prices_map = {}
                         
                     pivot_map[bc] = {
@@ -486,6 +562,10 @@ class StoreManagerApp:
                 
                 # Metadata precedence (if multiple rows had different meta? Local DB row is unique per product now)
                 # So we just take what's in the row.
+            
+            # If prices are still empty, maybe we need to fetch them from DB?
+            # get_all_products_local only returns what is in the columns.
+            # If update_delta didn't populate prices_json properly, we are in trouble.
             
             self.current_products.clear()
             self.current_products.extend(list(pivot_map.values()))
@@ -694,8 +774,8 @@ class StoreManagerApp:
         self.page.update()
 
     def build_ui(self):
-        self.btn_load = ft.ElevatedButton("PULL", icon=ft.Icons.DOWNLOAD, on_click=self.load_matrix)
-        self.btn_save = ft.ElevatedButton("PUSH", icon=ft.Icons.UPLOAD, on_click=self.save_changes, bgcolor=ft.Colors.BLUE_900, color=ft.Colors.WHITE)
+        self.btn_load = ft.ElevatedButton("PULL  ", icon=ft.Icons.DOWNLOAD, on_click=self.load_matrix)
+        self.btn_save = ft.ElevatedButton("PUSH  ", icon=ft.Icons.UPLOAD, on_click=self.save_changes, bgcolor=ft.Colors.BLUE_900, color=ft.Colors.WHITE)
         
         self.btn_add_store = ft.ElevatedButton("Nova Loja", icon=ft.Icons.STORE, on_click=self.add_store_click)
         self.btn_add_prod = ft.ElevatedButton("Novo item manual", icon=ft.Icons.ADD, on_click=self.add_product_click)

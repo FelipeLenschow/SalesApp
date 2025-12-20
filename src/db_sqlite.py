@@ -246,7 +246,8 @@ class Database:
             'marca': row[2],
             'categoria': row[3],
             'sabor': row[4],
-            'metadata': metadata
+            'metadata': metadata,
+            'prices_json': row[6] if has_prices else None
         }
         
         # Price Resolution
