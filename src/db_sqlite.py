@@ -38,17 +38,13 @@ class Database:
                 """)
 
                 # PRODUCTS table (V3 Cache - scoped to ONE shop)
-                # We drop the old one if it doesn't have product_id, or just generic "products"
-                # Let's check if product_id exists
+                # We assume we are on V3 or a fresh install.
+                # Remove aggressive "DROP TABLE" to prevent wiping valid databases that might just have a glitch or be in a transient state.
+                
+                # Check current schema to decide if migrations are needed
                 cursor = conn.execute("PRAGMA table_info(products)")
                 columns = [info[1] for info in cursor.fetchall()]
-                
-                if 'product_id' not in columns:
-                    # Legacy table or doesn't verify. Drop and recreate for V3 Cache.
-                    print("Updating Local DB Schema to V3...")
-                    conn.execute("DROP TABLE IF EXISTS product_prices")
-                    conn.execute("DROP TABLE IF EXISTS products")
-                
+
                 # Check for sync_status (Migration 3.1)
                 if 'sync_status' not in columns:
                      # We can just alter table if product_id exists

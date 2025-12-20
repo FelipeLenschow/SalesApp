@@ -152,6 +152,9 @@ class ProductApp:
                 local_conn = sqlite_db.Database()
                 local_conn.replace_all_products(products)
                 
+                # FIX: Set timestamp so next sync is Delta, not Full
+                local_conn.set_last_sync_timestamp(datetime.now().isoformat())
+                
                 # 4. Proceed
                 status_text.value = "Concluído!"
                 self.page.update()
