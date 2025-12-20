@@ -57,7 +57,7 @@ class SalesHistoryDialog:
     def load_data(self):
         try:
             # Load from AWS DB
-            sales_history = self.db.get_sales_history(shop_name=self.app.shop)
+            sales_history = self.db.get_sales_history(shop_name=self.app.shop, limit=100)
             
             # Helper to safely display values
             def safe_str(val):
