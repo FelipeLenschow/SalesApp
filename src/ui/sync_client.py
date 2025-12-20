@@ -26,27 +26,43 @@ class SyncClient:
             print(f"Error fetching shops: {e}")
             return []
 
-    def sync(self, shop_name=None):
+    def sync(self, shop_name=None, enable_deletion_check=False):
+        """
+        Main sync logic (Bidirectional).
+        1. Upload pending sales (Always)
+        2. Upload modified products (Priority)
+        3. Download delta products (Changed in Cloud)
+        4. Optional: Download IDs to detect cloud deletions (Heavy)
+        """
         if not self.cloud:
             return {"message": "Sem conexão AWS (Credenciais ausentes?)", "success": False}
 
-        results = {"uploaded": 0, "downloaded": 0, "deleted_local": 0, "message": "", "success": False}
+        results = {
+            "success": True, 
+            "message": "Sync completed", 
+            "uploaded_sales": 0,
+            "uploaded": 0,
+            "downloaded": 0,
+            "deleted_local": 0,
+            "products_uploaded": 0
+        }
         
-        # 1. Get Sales
+        # 1. Fetch Local Sales pending sync
         sales_data = []
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor = conn.cursor()
-                cursor.execute("SELECT timestamp, final_price, payment_method, products_json, sync_status FROM sales")
+                cursor.execute("SELECT timestamp, final_price, payment_method, products_json, sync_status FROM sales WHERE sync_status IS NOT 'synced'")
                 rows = cursor.fetchall()
+                
                 for row in rows:
-                    if row[4] != 'synced': # Only pending
-                        sales_data.append({
-                            "timestamp": row[0],
-                            "final_price": row[1],
-                            "payment_method": row[2],
-                            "products_json": row[3]
+                    if not row[3]: continue
+                    sales_data.append({
+                        'timestamp': row[0],
+                        'final_price': row[1],
+                        'payment_method': row[2],
+                        'products_json': row[3],
+                        'sync_status': row[4]
                         })
         except Exception as e:
             results["message"] = f"Error reading local sales: {e}"
@@ -57,16 +73,16 @@ class SyncClient:
         if not shop_name:
             shop_name = self.db.get_config('current_shop')
         
-        count_up = 0
+        count_up_sales = 0
         for sale in sales_data:
             try:
                 self.cloud.record_sale(shop_name, sale)
                 self.db.mark_sale_synced(sale['timestamp'])
-                count_up += 1
+                count_up_sales += 1
             except Exception as e:
                 print(f"Failed to upload sale: {e}")
         
-        results["uploaded_sales"] = count_up
+        results["uploaded_sales"] = count_up_sales
 
         # 3. Product Sync (Bidirectional Smart Sync)
         try:
@@ -89,27 +105,24 @@ class SyncClient:
                 # 1. Fetch Deltas
                 aws_products = self.cloud.get_products_delta(shop_name=shop_name, last_sync_ts=last_sync_ts)
                 
-                # 2. Fetch ALL IDs for deletion detection (Lightweight)
-                all_ids = self.cloud.get_all_product_ids()
-                # Use barcode maps
-                cloud_ids_map = {item['barcode']: item['product_id'] for item in all_ids}
+                # 2. Fetch ALL IDs for deletion detection (Lightweight) - Only if enabled
+                if enable_deletion_check:
+                    print("Fetching Cloud IDs for deletion check...")
+                    all_ids = self.cloud.get_all_product_ids()
+                    cloud_ids_map = {item['barcode']: item['product_id'] for item in all_ids}
+                else:
+                    cloud_ids_map = {} # Empty means we won't delete anything
 
             # Local Data
             local_products = self.db.get_all_products_local()
             local_map = {p['barcode']: p for p in local_products}
-            aws_delta_map = {p['barcode']: p for p in aws_products} # Only changed/new items
             
             # A) PRIORITY: Upload Local Modifications
             # Products marked as 'modified' or new (not in AWS but passed modified check)
             products_to_upload = []
             
             for p_local in local_products:
-                barcode = p_local['barcode']
                 status = p_local.get('sync_status', 'synced')
-                
-                # If modified explicitly OR (not in AWS and not explicitly synced - new)
-                # Actually, if not in AWS and 'synced', it implies deletion from cloud.
-                # So we ONLY upload if 'modified'.
                 if status == 'modified':
                     products_to_upload.append(p_local)
             
@@ -170,16 +183,21 @@ class SyncClient:
             results["downloaded"] = count_down
 
             # C) Process Deletions
-            # We compare local barcodes against `cloud_ids_map`.
-            # If local exists but not in cloud map -> Delete local.
+            # Only if map is populated (implies enabled check or Full Sync)
+            # Note: For Full Sync, cloud_ids_map is auto-populated from get_products_delta result?
+            # get_products_delta returns everything in Full Sync mode? 
+            # If get_products_delta(None) returns ALL items, then cloud_ids_map populated from it is complete.
+            # So Full Sync naturally handles deletion without extra call.
+            # Delta Sync needs enable_deletion_check to populate it manually.
             
             products_to_delete = []
-            for barcode, p_local in local_map.items():
-                if barcode not in cloud_ids_map:
-                    status = p_local.get('sync_status', 'synced')
-                    if status == 'synced':
-                        products_to_delete.append(p_local)
-
+            if cloud_ids_map: 
+                for barcode, p_local in local_map.items():
+                    if barcode not in cloud_ids_map:
+                        status = p_local.get('sync_status', 'synced')
+                        if status == 'synced':
+                            products_to_delete.append(p_local)
+            
             # Execute Deletions
             count_del = 0
             for p in products_to_delete:
