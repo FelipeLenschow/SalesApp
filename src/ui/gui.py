@@ -344,18 +344,7 @@ class ProductApp:
                     # Clear value after successful single product add
                     self.barcode_entry.value = ""
 
-                    # CHECK FOR ZERO PRICE AND SUGGEST
-                    if product['preco'] <= 0 and self.aws_db:
-                        def check_other_prices():
-                            try:
-                                suggestions = self.aws_db.get_prices_from_other_stores(barcode)
-                                if suggestions:
-                                    # Show Dialog
-                                    self.show_price_suggestions(suggestions, product)
-                            except Exception as e:
-                                print(f"Error suggesting prices: {e}")
-                        
-                        threading.Thread(target=check_other_prices, daemon=True).start()
+                    # CHECK FOR ZERO PRICE AND SUGGEST - REMOVED (Moved to widget creation)
                 else:
                     # Varios produtos encontrados para o mesmo codigo
                     # DO NOT CLEAR VALUE HERE - keep it so dropdown stays open
@@ -435,7 +424,8 @@ class ProductApp:
                 'sabor': product_series.get('sabor', ''),
                 'preco': self.sale.current_sale[product_id]['preco'],
                 'quantidade': self.sale.current_sale[product_id]['quantidade'],
-                'product_id': product_id
+                'product_id': product_id,
+                'barcode': product_series.get('barcode', '')
             }
             self.create_or_update_product_widget(product_id, details, skip_price_update=(product_id == skip_price_update_for))
 
@@ -531,6 +521,28 @@ class ProductApp:
                 'delete_button': delete_button,
                 'row': product_row
             }
+
+            # Check for Zero Price and Suggest (Moved from handle_barcode)
+            if details.get('preco', 0) <= 0 and self.aws_db:
+                barcode = details.get('barcode', '')
+                # Ensure we have a valid barcode to check
+                if barcode and str(barcode).isdigit():
+                    def check_other_prices():
+                        try:
+                            # We need product dict for the dialog
+                            # Re-construct minimal product dict or pass 'details' if adapted
+                            # 'show_price_suggestions' uses 'product' dict for update logic
+                            # It expects 'product_id' and 'categoria' for text
+                            
+                            suggestions = self.aws_db.get_prices_from_other_stores(barcode)
+                            if suggestions:
+                                # Show Dialog
+                                # Pass 'details' because it has product_id and others
+                                self.show_price_suggestions(suggestions, details)
+                        except Exception as e:
+                            print(f"Error suggesting prices: {e}")
+
+                    threading.Thread(target=check_other_prices, daemon=True).start()
 
         else:
             # Update existing widgets
