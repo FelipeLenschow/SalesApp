@@ -37,15 +37,17 @@ class SyncClient:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT timestamp, final_price, payment_method, products_json FROM sales")
+                cursor = conn.cursor()
+                cursor.execute("SELECT timestamp, final_price, payment_method, products_json, sync_status FROM sales")
                 rows = cursor.fetchall()
                 for row in rows:
-                    sales_data.append({
-                        "timestamp": row[0],
-                        "final_price": row[1],
-                        "payment_method": row[2],
-                        "products_json": row[3]
-                    })
+                    if row[4] != 'synced': # Only pending
+                        sales_data.append({
+                            "timestamp": row[0],
+                            "final_price": row[1],
+                            "payment_method": row[2],
+                            "products_json": row[3]
+                        })
         except Exception as e:
             results["message"] = f"Error reading local sales: {e}"
             results["success"] = False
@@ -59,6 +61,7 @@ class SyncClient:
         for sale in sales_data:
             try:
                 self.cloud.record_sale(shop_name, sale)
+                self.db.mark_sale_synced(sale['timestamp'])
                 count_up += 1
             except Exception as e:
                 print(f"Failed to upload sale: {e}")
@@ -67,13 +70,34 @@ class SyncClient:
 
         # 3. Product Sync (Bidirectional Smart Sync)
         try:
-            # Fetch all from both sources
-            aws_products = self.cloud.get_all_products(shop_name)
-            local_products = self.db.get_all_products_local()
+            # Check Last Sync Timestamp
+            last_sync_ts = self.db.get_last_sync_timestamp()
+            current_ts = datetime.now().isoformat()
             
-            # Index by barcode for O(1) access
-            aws_map = {p['barcode']: p for p in aws_products}
+            aws_products = []
+            cloud_ids_map = {} # For deletion checking
+            
+            if not last_sync_ts:
+                # FULL SYNC
+                print("Performing FULL SYNC (Baseline)...")
+                aws_products = self.cloud.get_products_delta(shop_name=shop_name, last_sync_ts=None)
+                # For full sync, the list of products is the source of truth for presence
+                cloud_ids_map = {p['barcode']: p['product_id'] for p in aws_products}
+            else:
+                # DELTA SYNC
+                print(f"Performing DELTA SYNC (Since {last_sync_ts})...")
+                # 1. Fetch Deltas
+                aws_products = self.cloud.get_products_delta(shop_name=shop_name, last_sync_ts=last_sync_ts)
+                
+                # 2. Fetch ALL IDs for deletion detection (Lightweight)
+                all_ids = self.cloud.get_all_product_ids()
+                # Use barcode maps
+                cloud_ids_map = {item['barcode']: item['product_id'] for item in all_ids}
+
+            # Local Data
+            local_products = self.db.get_all_products_local()
             local_map = {p['barcode']: p for p in local_products}
+            aws_delta_map = {p['barcode']: p for p in aws_products} # Only changed/new items
             
             # A) PRIORITY: Upload Local Modifications
             # Products marked as 'modified' or new (not in AWS but passed modified check)
@@ -102,71 +126,70 @@ class SyncClient:
 
             results["products_uploaded"] = count_prod_up
             
-            # RE-EVALUATE Local State?
-            # Ideally we rely on memory maps but since we just synced some, we assume they are now equal to what we sent.
-            # But let's check for Downloads/Deletions now.
+            # B) Download Updates (From Delta or Full List)
+            # If Delta, this list only contains changed items.
+            # If Full, it contains everything.
             
-            # B) Download Updates & Deletions (Cloud Authority)
-            products_to_download = []
-            products_to_delete = [] # Local deletions (because they are missing in Cloud)
+            count_down = 0
             
             for p_aws in aws_products:
                 barcode = p_aws['barcode']
                 
-                if barcode not in local_map:
-                    # New in Cloud -> Download
-                    products_to_download.append(p_aws)
+                # If we just uploaded it, ignore download (we are the source)
+                # (Unless we want to get the updated timestamp, but local 'synced' is enough)
+                
+                p_local = local_map.get(barcode)
+                should_download = False
+                
+                if not p_local:
+                    should_download = True # New
                 else:
-                    # Exists in Local. Check status.
-                    p_local = local_map[barcode]
+                    # Exists. 
                     status = p_local.get('sync_status', 'synced')
-                    
                     if status == 'synced':
-                        # If local is synced (not modified pending upload), Cloud is authority.
-                        # Compare content.
-                        is_different = False
-                        if p_local['categoria'] != p_aws['categoria']: is_different = True
-                        if p_local['sabor'] != p_aws['sabor']: is_different = True
-                        try:
-                            if abs(float(p_local['preco']) - float(p_aws['preco'])) > 0.001: is_different = True
-                        except: is_different = True
-                        
-                        if is_different:
-                            products_to_download.append(p_aws)
-                    
-                    # If status == 'modified', we skip downloading. We just tried to upload it.
-                    # If upload failed, we keep local version (conflict -> local wins/retry next time).
+                         # If synced, trust cloud (delta implies change)
+                         should_download = True
+                    # If modified, we just tried to upload. If successful, local is synced.
+                    # Conflict resolution: if simultaneous edit, cloud (Delta) usually wins in this simple logic,
+                    # OR we define "Server Wins". 
+                    # Here: if we have local changes remaining (upload failed), we keep local.
+                
+                if should_download:
+                   product_info = {
+                        'product_id': p_aws['product_id'],
+                        'barcode': p_aws['barcode'],
+                        'categoria': p_aws['categoria'],
+                        'sabor': p_aws['sabor'],
+                        'marca': p_aws['marca'], # Ensure branding is consistant
+                        'brand': p_aws['marca'],
+                        'preco': p_aws['preco']
+                   }
+                   self.db.add_product(product_info, shop_name, sync_status='synced')
+                   count_down += 1
             
-            # Check for Local Deletions (In Local (Synced) but NOT in AWS)
+            results["downloaded"] = count_down
+
+            # C) Process Deletions
+            # We compare local barcodes against `cloud_ids_map`.
+            # If local exists but not in cloud map -> Delete local.
+            
+            products_to_delete = []
             for barcode, p_local in local_map.items():
-                if barcode not in aws_map:
+                if barcode not in cloud_ids_map:
                     status = p_local.get('sync_status', 'synced')
                     if status == 'synced':
-                        # Valid candidate for deletion (it was synced before, now gone from cloud)
                         products_to_delete.append(p_local)
-                    # If 'modified', it's a new local creation not yet uploaded (or upload failed above). Keep it.
 
             # Execute Deletions
             count_del = 0
             for p in products_to_delete:
                 self.db.delete_product(p['barcode'])
                 count_del += 1
-            
-            # Execute Downloads
-            count_down = 0
-            for p in products_to_download:
-                product_info = {
-                    'barcode': p['barcode'],
-                    'categoria': p['categoria'],
-                    'sabor': p['sabor'],
-                    'preco': p['preco']
-                }
-                # Add with 'synced' status because it comes from cloud
-                self.db.add_product(product_info, shop_name, sync_status='synced')
-                count_down += 1
-            
-            results["downloaded"] = count_down
+                
             results["deleted_local"] = count_del
+            
+            # SUCCESS: Update Timestamp
+            self.db.set_last_sync_timestamp(current_ts)
             
             msg_parts = ["Sync completed"]
             if count_prod_up > 0: msg_parts.append(f"↑ {count_prod_up}")

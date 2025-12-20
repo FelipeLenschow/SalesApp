@@ -24,7 +24,8 @@ class Database:
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         final_price REAL,
                         payment_method TEXT,
-                        products_json TEXT
+                        products_json TEXT,
+                        sync_status TEXT DEFAULT 'pending'
                     );
                 """)
                 
@@ -91,6 +92,15 @@ class Database:
                 """)
                 # Index for barcode search
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_barcode ON products(barcode)")
+                
+                # Check for sales sync_status (Migration 3.3)
+                cursor = conn.execute("PRAGMA table_info(sales)")
+                s_columns = [info[1] for info in cursor.fetchall()]
+                if 'sync_status' not in s_columns:
+                    try:
+                        conn.execute("ALTER TABLE sales ADD COLUMN sync_status TEXT DEFAULT 'synced'") # Old sales assumed synced
+                    except:
+                        pass
                 
         except sqlite3.Error as e:
             print(f"Error initializing local database: {e}")
@@ -281,12 +291,20 @@ class Database:
             products_json = json.dumps(products_dict)
             with self.get_connection() as conn:
                 conn.execute("""
-                    INSERT INTO sales (final_price, payment_method, products_json)
-                    VALUES (?, ?, ?)
+                    INSERT INTO sales (final_price, payment_method, products_json, sync_status)
+                    VALUES (?, ?, ?, 'pending')
                 """, (final_price, payment_method, products_json))
         except sqlite3.Error as e:
             print(f"Error recording sale: {e}")
             raise e
+
+    def mark_sale_synced(self, timestamp):
+        try:
+            with self.get_connection() as conn:
+                # Timestamp is unique enough for this single device log
+                conn.execute("UPDATE sales SET sync_status = 'synced' WHERE timestamp = ?", (timestamp,))
+        except sqlite3.Error as e:
+            print(f"Error marking sale synced: {e}")
 
     def get_sales_history(self, shop_name=None, limit=50):
         try:
@@ -328,6 +346,12 @@ class Database:
             row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
             return row[0] if row else None
 
+    def get_last_sync_timestamp(self):
+        return self.get_config('last_sync_timestamp')
+
+    def set_last_sync_timestamp(self, ts):
+        self.set_config('last_sync_timestamp', ts)
+
     def get_shops(self):
         try:
             val = self.get_config('cached_shops')
@@ -365,11 +389,29 @@ class Database:
             except:
                 price = 0.0
 
+            # Merge Prices Logic (Fix for Store Manager / Delta Sync)
+            current_prices = {}
+            # Try to fetch existing prices first
+            try:
+                 with self.get_connection() as conn:
+                     row = conn.execute("SELECT prices_json FROM products WHERE product_id=? OR barcode=?", (p_id, barcode)).fetchone()
+                     if row and row[0]:
+                         val = row[0]
+                         if val: current_prices = json.loads(val)
+            except:
+                pass
+
+            if shop_name:
+                current_prices[shop_name] = price
+                
+            prices_json_str = json.dumps(current_prices)
+
             # Update dictionary for metadata consistency
             product_info['preco'] = price
             product_info['marca'] = brand
             product_info['categoria'] = category
             product_info['sabor'] = flavor
+            product_info['prices'] = current_prices # Keep metadata consistent too
             
             metadata = json.dumps(product_info)
             
@@ -377,7 +419,7 @@ class Database:
                 conn.execute("""
                     INSERT OR REPLACE INTO products (product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (p_id, barcode, brand, category, flavor, price, '{}', metadata, sync_status))
+                """, (p_id, barcode, brand, category, flavor, price, prices_json_str, metadata, sync_status))
                 
             return p_id
         except sqlite3.Error as e:

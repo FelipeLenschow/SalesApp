@@ -6,6 +6,7 @@ import os
 import decimal
 import time
 import uuid
+from datetime import datetime
 
 # Helper class to convert Python objects to DynamoDB format
 class DecimalEncoder(json.JSONEncoder):
@@ -179,9 +180,12 @@ class Database:
 
         try:
             # UpdateItem allows us to create or update attributes
+            # Add last_updated timestamp
+            timestamp = datetime.now().isoformat()
+            
             self.products_table.update_item(
                 Key={'product_id': product_id},
-                UpdateExpression="SET barcode=:code, category=:cat, flavor=:flav, brand=:brand, #p=:price",
+                UpdateExpression="SET barcode=:code, category=:cat, flavor=:flav, brand=:brand, #p=:price, last_updated=:ts",
                 ExpressionAttributeNames={
                     '#p': price_attr
                 },
@@ -190,7 +194,8 @@ class Database:
                     ':cat': category,
                     ':flav': flavor,
                     ':brand': brand,
-                    ':price': price
+                    ':price': price,
+                    ':ts': timestamp
                 }
             )
             return product_id
@@ -203,13 +208,16 @@ class Database:
         """
         Removes the price column for this shop.
         Does NOT delete the product item itself.
+        Updates timestamp to trigger sync.
         """
         price_attr = self._get_price_attr_name(shop_name)
+        timestamp = datetime.now().isoformat()
         try:
             self.products_table.update_item(
                 Key={'product_id': product_id},
-                UpdateExpression="REMOVE #p",
-                ExpressionAttributeNames={'#p': price_attr}
+                UpdateExpression="REMOVE #p SET last_updated=:ts",
+                ExpressionAttributeNames={'#p': price_attr},
+                ExpressionAttributeValues={':ts': timestamp}
             )
         except ClientError as e:
             print(f"Error deleting product (price removal): {e}")
@@ -226,19 +234,35 @@ class Database:
             raise e
 
     def get_all_products(self, shop_name=None, progress_callback=None):
+        return self.get_products_delta(shop_name=shop_name, last_sync_ts=None, progress_callback=progress_callback)
+
+    def get_products_delta(self, shop_name=None, last_sync_ts=None, progress_callback=None):
         """
-        Returns flat list.
-        If shop_name provided: filters items where price_{shop_name} exists.
+        Fetches products. 
+        If last_sync_ts provided, returns only items modified after that time.
         """
         try:
             items = []
             kwargs = {}
             price_attr = ""
             
+            filter_exp = None
+            
             if shop_name:
                 price_attr = self._get_price_attr_name(shop_name)
                 # FilterExpression: attribute_exists(price_Shop_A)
-                kwargs['FilterExpression'] = f"attribute_exists({price_attr})"
+                filter_exp = boto3.dynamodb.conditions.Attr(price_attr).exists()
+            
+            if last_sync_ts:
+                # Add timestamp filter
+                ts_filter = boto3.dynamodb.conditions.Attr('last_updated').gt(last_sync_ts)
+                if filter_exp:
+                    filter_exp = filter_exp & ts_filter
+                else:
+                    filter_exp = ts_filter
+            
+            if filter_exp:
+                kwargs['FilterExpression'] = filter_exp
             
             while True:
                 response = self.products_table.scan(**kwargs)
@@ -266,7 +290,8 @@ class Database:
                         'sabor': item.get('flavor', ''),
                         'marca': item.get('brand', ''),
                         'preco': float(p_val),
-                        'shop_name': shop_name
+                        'shop_name': shop_name,
+                        'last_updated': item.get('last_updated', '')
                     })
                 else:
                     # If all, return all found prices?
@@ -282,18 +307,13 @@ class Database:
                             'sabor': item.get('flavor', ''),
                             'marca': item.get('brand', ''),
                             'preco': 0.0,
-                            'shop_name': '' 
+                            'shop_name': '',
+                            'last_updated': item.get('last_updated', '')
                         })
                     
                     for k in keys:
                         s_name_raw = k.replace("price_", "")
-                        # Try to restore original shop name if we did simple replace?
-                        # This is the downside of sanitization. "Loja_A" could be "Loja A" or "Loja_A".
-                        # But mostly we use this for retrieval in context of known shops.
-                        # Ideally we store shop names map? No user wanted clean columns.
-                        # Let's assume underscores are spaces for display if needed, or just return raw.
-                        
-                        s_name = s_name_raw.replace("_", " ") # Basic heuristic
+                        s_name = s_name_raw.replace("_", " ") 
                         p_val = item[k]
                         results.append({
                             'product_id': item['product_id'],
@@ -302,12 +322,37 @@ class Database:
                             'sabor': item.get('flavor', ''),
                             'marca': item.get('brand', ''),
                             'preco': float(p_val),
-                            'shop_name': s_name 
+                            'shop_name': s_name,
+                            'last_updated': item.get('last_updated', '')
                         })
 
             return results
         except ClientError as e:
-            print(f"Error fetching products: {e}")
+            print(f"Error fetching products delta: {e}")
+            return []
+
+    def get_all_product_ids(self):
+        """
+        Fast scan to get all IDs and Barcodes for deletion detection.
+        """
+        try:
+            items = []
+            kwargs = {
+                'ProjectionExpression': "product_id, barcode"
+            }
+            
+            while True:
+                response = self.products_table.scan(**kwargs)
+                items.extend(response.get('Items', []))
+                
+                last_key = response.get('LastEvaluatedKey')
+                if not last_key:
+                    break
+                kwargs['ExclusiveStartKey'] = last_key
+                
+            return items
+        except ClientError as e:
+            print(f"Error fetching product IDs: {e}")
             return []
 
     def get_all_products_grouped(self, progress_callback=None):

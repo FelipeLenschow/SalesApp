@@ -1,7 +1,9 @@
 import flet as ft
 from src.aws_db import Database
+import src.db_sqlite as local_db
 import time
 import threading
+from datetime import datetime
 
 class StoreManagerApp:
     def __init__(self, page: ft.Page):
@@ -12,6 +14,7 @@ class StoreManagerApp:
         
         # Initialize DB
         self.db = Database()
+        self.local_db = local_db.Database()
         
         # State
         self.current_products = [] 
@@ -379,35 +382,110 @@ class StoreManagerApp:
         self.page.update()
         
         try:
-            shops = self.db.get_shops()
+            # shops logic depends on DB... AWS scan?
+            # get_shops returns local config. AWS does scan.
+            # Mirror Sync Client Logic
+            
+            # 1. Update timestamp logic
+            last_sync_ts = self.local_db.get_last_sync_timestamp()
+            current_ts = datetime.now().isoformat()
+            
+            delta_products = []
+            
+            if not last_sync_ts:
+                print("StoreManager: Full Sync")
+                delta_products = self.db.get_products_delta(shop_name=None, last_sync_ts=None) # get_products_delta returns aggregated if None or shop specific?
+                # AWS get_products_delta returns flattened rows!
+                # If shop_name is None, it scans everything.
+                # It returns rows: {product_id, barcode, price_ShopA...} -> NO.
+                # Let's check aws_db.get_products_delta again. 
+                # It returns flattened: {..., shop_name: 'Shop A', preco: 10.0}
+            else:
+                 print(f"StoreManager: Delta Sync since {last_sync_ts}")
+                 delta_products = self.db.get_products_delta(shop_name=None, last_sync_ts=last_sync_ts)
+                 
+                 # 2. Deletions (Lightweight)
+                 all_ids = self.db.get_all_product_ids()
+                 cloud_ids = {item['barcode'] for item in all_ids}
+                 
+                 # Check local deletions
+                 local_prods = self.local_db.get_all_products_local()
+                 for p in local_prods:
+                     if p['barcode'] not in cloud_ids:
+                         print(f"Deleting local: {p['barcode']}")
+                         self.local_db.delete_product(p['barcode'])
+
+            # 3. Apply Delta to Local DB
+            count_updates = 0
+            for item in delta_products:
+                # Add product merges prices, so this is safe.
+                # Each item is ONE price for ONE shop.
+                s_name = item.get('shop_name')
+                
+                # Check for shop name being None (if unlisted)
+                if not s_name: continue 
+                
+                info = {
+                    'product_id': item['product_id'],
+                    'barcode': item['barcode'],
+                    'categoria': item.get('categoria', ''),
+                    'sabor': item.get('sabor', ''),
+                    'marca': item.get('marca', ''),
+                    'preco': item.get('preco', 0.0)
+                }
+                
+                self.local_db.add_product(info, shop_name=s_name, sync_status='synced')
+                count_updates += 1
+            
+            if count_updates > 0 or not last_sync_ts:
+                self.local_db.set_last_sync_timestamp(current_ts)
+            
+            # 4. Load from Local (Pivot)
+            # Fetch generic shops list? 
+            # If we rely on local DB config for columns:
+            shops = self.local_db.get_shops() # Returns cached shops
+            if not shops:
+                 # If empty (first run), maybe try to extract from AWS?
+                 # Or just rely on what we have in products?
+                 # aws_db.get_shops() fetches from PublicShops table.
+                 shops = self.db.get_shops()
+            else:
+                 # Check if we have new shops in cloud?
+                 # Ideally we sync shops table too.
+                 cloud_shops = self.db.get_shops()
+                 for s in cloud_shops:
+                     if s not in shops: shops.append(s)
+            
             shops.sort()
             self.known_shops.clear()
             self.known_shops.extend(shops)
             
-            flat_products = self.db.get_all_products(shop_name=None)
+            # Fetch ALL local for display
+            flat_products = self.local_db.get_all_products_local()
             
             pivot_map = {}
             
             for item in flat_products:
                 bc = item['barcode']
-                s_name = item.get('shop_name')
-                price = item.get('preco', 0.0)
                 
                 if bc not in pivot_map:
+                    p_id = item.get('product_id')
+                    try:
+                        prices_map = json.loads(item.get('prices_json', '{}')) if isinstance(item.get('prices_json'), str) else item.get('prices_json', {})
+                    except:
+                        prices_map = {}
+                        
                     pivot_map[bc] = {
-                        'product_id': item.get('product_id'),
+                        'product_id': p_id,
                         'barcode': bc,
                         'marca': item.get('marca', ''),
                         'categoria': item.get('categoria', ''),
                         'sabor': item.get('sabor', ''),
-                        'prices': {}
+                        'prices': prices_map
                     }
                 
-                if not pivot_map[bc]['marca'] and item.get('marca'): pivot_map[bc]['marca'] = item.get('marca')
-                if not pivot_map[bc]['categoria'] and item.get('categoria'): pivot_map[bc]['categoria'] = item.get('categoria')
-
-                if s_name:
-                    pivot_map[bc]['prices'][s_name] = price
+                # Metadata precedence (if multiple rows had different meta? Local DB row is unique per product now)
+                # So we just take what's in the row.
             
             self.current_products.clear()
             self.current_products.extend(list(pivot_map.values()))
@@ -422,8 +500,8 @@ class StoreManagerApp:
             
             self.refresh_table()
             
-            self.status_text.value = f"Carregado: {len(self.current_products)} produtos, {len(self.known_shops)} lojas."
-            self.show_snack("Download concluído.", ft.Colors.GREEN)
+            self.status_text.value = f"Carregado: {len(self.current_products)} produtos. (Delta: {count_updates})"
+            self.show_snack(f"Sync concluído. Baixados: {count_updates}", ft.Colors.GREEN)
             
         except Exception as ex:
             print(ex)
@@ -616,8 +694,8 @@ class StoreManagerApp:
         self.page.update()
 
     def build_ui(self):
-        self.btn_load = ft.ElevatedButton("PULL (Baixar)", icon=ft.Icons.DOWNLOAD, on_click=self.load_matrix)
-        self.btn_save = ft.ElevatedButton("PUSH (Salvar Editados)", icon=ft.Icons.UPLOAD, on_click=self.save_changes, bgcolor=ft.Colors.BLUE_900, color=ft.Colors.WHITE)
+        self.btn_load = ft.ElevatedButton("PULL", icon=ft.Icons.DOWNLOAD, on_click=self.load_matrix)
+        self.btn_save = ft.ElevatedButton("PUSH", icon=ft.Icons.UPLOAD, on_click=self.save_changes, bgcolor=ft.Colors.BLUE_900, color=ft.Colors.WHITE)
         
         self.btn_add_store = ft.ElevatedButton("Nova Loja", icon=ft.Icons.STORE, on_click=self.add_store_click)
         self.btn_add_prod = ft.ElevatedButton("Novo item manual", icon=ft.Icons.ADD, on_click=self.add_product_click)
