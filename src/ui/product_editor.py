@@ -7,7 +7,7 @@ class ProductEditor:
         self.app = app
         self.page = app.page
 
-    def open(self, product_id=None, barcode=None, prefill_store=None):
+    def open(self, product_id=None, barcode=None, prefill_store=None, suggested_price=None):
         shop = self.app.sale.shop if prefill_store is None else prefill_store
         
         # Set editing flag to block F12 from focusing main window
@@ -23,12 +23,16 @@ class ProductEditor:
                 self.app.is_editing = False # Ensure flag is reset
                 return
             
+            p_price = product_series.get('preco', 0)
+            if suggested_price is not None:
+                p_price = suggested_price
+
             current_data = {
                 'titulo_da_aba': 'Editar Produto',
                 'barcode': product_series.get('barcode', ''),
                 'sabor': product_series.get('sabor', ''),
                 'categoria': product_series.get('categoria', ''),
-                'preco': product_series.get('preco', 0),
+                'preco': p_price,
             }
         else:
             current_data = {

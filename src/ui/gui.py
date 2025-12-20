@@ -41,6 +41,14 @@ class ProductApp:
         # State flags
         self.is_editing = False # Flag to track if edit dialog is open
         self.last_barcode_scan = 0 # Timestamp of last barcode scan to prevent instant closing
+        
+        # Initialize Cloud DB for price suggestions
+        try:
+            self.aws_db = Database()
+        except:
+            self.aws_db = None
+            print("Failed to init AWS DB for suggestions")
+
 
         # Keyboard event handling
         self.page.on_keyboard_event = self.on_key_event
@@ -332,6 +340,19 @@ class ProductApp:
                     
                     # Clear value after successful single product add
                     self.barcode_entry.value = ""
+
+                    # CHECK FOR ZERO PRICE AND SUGGEST
+                    if product['preco'] <= 0 and self.aws_db:
+                        def check_other_prices():
+                            try:
+                                suggestions = self.aws_db.get_prices_from_other_stores(barcode)
+                                if suggestions:
+                                    # Show Dialog
+                                    self.show_price_suggestions(suggestions, product)
+                            except Exception as e:
+                                print(f"Error suggesting prices: {e}")
+                        
+                        threading.Thread(target=check_other_prices, daemon=True).start()
                 else:
                     # Varios produtos encontrados para o mesmo codigo
                     # DO NOT CLEAR VALUE HERE - keep it so dropdown stays open
@@ -799,7 +820,63 @@ class ProductApp:
                 ft.TextButton("Cancelar", on_click=lambda e: self.page.close(dlg))
             ]
         )
+        self.page.open(dlg)
+        self.page.update()
 
+    def show_price_suggestions(self, suggestions, product):
+        """
+        Shows a dialog with price suggestions from other stores.
+        """
+        
+        def apply_price(e, price_val):
+            # Close dialog first
+            self.page.close(dlg)
+            
+            # Open editor with suggested price
+            if product.get('product_id'):
+                # Pass suggested_price to editor
+                self.editor.open(
+                    product_id=product['product_id'], 
+                    suggested_price=price_val
+                )
+            
+            self.page.update()
+
+        rows = []
+        for shop, price in suggestions.items():
+            rows.append(
+                ft.Row([
+                    ft.Text(f"{shop}:", weight="bold", size=16),
+                    ft.OutlinedButton(
+                        text=f"R$ {price:.2f}",
+                        on_click=lambda e, p=price: apply_price(e, p),
+                        style=ft.ButtonStyle(
+                            color="green",
+                            padding=10
+                        )
+                    )
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            )
+
+        content = ft.Column(
+            [   
+                ft.Text(f"O produto '{product.get('categoria', 'Desconhecido')}' está sem preço.", size=14),
+                ft.Text("Clique no preço para aplicar:", size=14),
+                ft.Divider(),
+                ft.Column(rows),
+            ],
+            tight=True,
+            width=300
+        )
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Sugestão de Preços"),
+            content=content,
+            actions=[
+                ft.TextButton("Fechar", on_click=lambda e: self.page.close(dlg)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
         self.page.open(dlg)
         self.page.update()
 
