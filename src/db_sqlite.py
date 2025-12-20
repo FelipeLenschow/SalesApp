@@ -289,11 +289,15 @@ class Database:
         try:
             # Products dict is {product_id: details}
             products_json = json.dumps(products_dict)
+            
+            # Use Local Time explicitly
+            local_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            
             with self.get_connection() as conn:
                 conn.execute("""
-                    INSERT INTO sales (final_price, payment_method, products_json, sync_status)
-                    VALUES (?, ?, ?, 'pending')
-                """, (final_price, payment_method, products_json))
+                    INSERT INTO sales (timestamp, final_price, payment_method, products_json, sync_status)
+                    VALUES (?, ?, ?, ?, 'pending')
+                """, (local_ts, final_price, payment_method, products_json))
         except sqlite3.Error as e:
             print(f"Error recording sale: {e}")
             raise e
