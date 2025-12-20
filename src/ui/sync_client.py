@@ -97,8 +97,13 @@ class SyncClient:
                 # FULL SYNC
                 print("Performing FULL SYNC (Baseline)...")
                 aws_products = self.cloud.get_products_delta(shop_name=shop_name, last_sync_ts=None)
-                # For full sync, the list of products is the source of truth for presence
-                cloud_ids_map = {p['barcode']: p['product_id'] for p in aws_products}
+                
+                # FIX: For Full Sync, we must not rely solely on 'aws_products' (which is filtered by shop)
+                # for the deletion map, otherwise we delete cached products from other shops.
+                # We need the GLOBAL list of valid IDs to know what to keep.
+                print("Fetching Global ID list for deletion check...")
+                all_ids = self.cloud.get_all_product_ids()
+                cloud_ids_map = {item['barcode']: item['product_id'] for item in all_ids}
             else:
                 # DELTA SYNC
                 print(f"Performing DELTA SYNC (Since {last_sync_ts})...")

@@ -521,6 +521,47 @@ class Database:
             print(f"Error fetching template: {e}")
             return None
 
+    def get_prices_from_other_stores(self, barcode):
+        """
+        Fetches prices for the given barcode from ALL shops.
+        Returns a dictionary: { 'Shop Name': price_float }
+        """
+        try:
+            response = self.products_table.query(
+                IndexName='BarcodeIndex',
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('barcode').eq(barcode)
+            )
+            items = response.get('Items', [])
+            
+            suggestions = {}
+            if not items:
+                return suggestions
+
+            item = items[0] # Barcode should be unique per product ideally, or we aggregate
+            
+            # Helper to extract shop name from attribute key
+            # Attribute format: price_Shop_Name
+            for key, value in item.items():
+                if key.startswith('price_'):
+                    shop_attr = key[6:] # remove 'price_'
+                    # We need to try to reconstruct the original name. 
+                    # Since we replaced spaces with underscores in _get_price_attr_name,
+                    # Reciprocal might be ambiguous if original had underscores, but for display it is fine.
+                    shop_display_name = shop_attr.replace('_', ' ')
+                    
+                    try:
+                        price = float(value)
+                        if price > 0:
+                            suggestions[shop_display_name] = price
+                    except:
+                        pass
+            
+            return suggestions
+
+        except ClientError as e:
+            print(f"Error checking other store prices: {e}")
+            return {}
+
     # --- Sales Management ---
 
     def record_sale(self, shop_name, sale_data):
