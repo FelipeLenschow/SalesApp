@@ -52,12 +52,18 @@ class StoreManagerApp:
         self.dirty_new_shops = set()
         self.dirty_deletes = set() # product_ids to delete
 
+        self.page.on_keyboard_event = self.on_keyboard
         self.build_ui()
 
     def show_snack(self, message, color=ft.Colors.GREEN):
         self.page.snack_bar = ft.SnackBar(ft.Text(str(message)), bgcolor=color)
         self.page.snack_bar.open = True
         self.page.update()
+
+    def on_keyboard(self, e: ft.KeyboardEvent):
+        if e.key == "F12" or e.key == "End":
+            self.input_search.focus()
+            self.input_search.update()
 
     def get_row_color(self, barcode):
         is_dirty_meta = barcode in self.dirty_metadata
@@ -771,7 +777,7 @@ class StoreManagerApp:
         self.process_barcode(bc)
         self.input_search.value = ""
         self.input_search.focus()
-        self.page.update()
+        self.input_search.update()
 
     def build_ui(self):
         self.btn_load = ft.ElevatedButton("PULL  ", icon=ft.Icons.DOWNLOAD, on_click=self.load_matrix)

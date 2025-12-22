@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "SalesApp"
+version = "0.1.2"
+description = "Sales Management Application"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3",
+    "flet",
+    "requests",
+    "qrcode",
+    "Pillow",
+]
+
+[project.scripts]
+sales-app = "src.entry:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+artifacts = ["src/embedded_credentials.py"]
+
+[tool.hatch.build.targets.app]

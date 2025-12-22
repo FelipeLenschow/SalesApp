@@ -45,9 +45,9 @@ class ProductApp:
         # Initialize Cloud DB for price suggestions
         try:
             self.aws_db = Database()
-        except:
+        except Exception as e:
             self.aws_db = None
-            print("Failed to init AWS DB for suggestions")
+            print(f"Failed to init AWS DB for suggestions: {e}")
 
 
         # Keyboard event handling
@@ -296,6 +296,9 @@ class ProductApp:
             self.ui.hide_dropdown()
 
     def handle_barcode(self, event=None):
+        if self.is_editing:
+             return
+             
         # Update timestamp to prevent on_blur from closing logic
         self.last_barcode_scan = time.time()
         
@@ -380,15 +383,12 @@ class ProductApp:
         self.page.update()
 
     def on_key_event(self, e: ft.KeyboardEvent):
-        if e.key == "Enter":
-            pass # Handled by on_submit
+        if (e.key == "F12" or e.key == "End") and not self.is_editing:
+            self.barcode_entry.focus()
+        elif e.key == "Tab" and not self.is_editing:
+             self.handle_barcode()
         elif e.key == "F11":
             self.finalize_sale(self.sale.id)
-        elif e.key == "F12" or e.key == "\x02" or (e.ctrl and e.key == "B"):
-            if not self.is_editing:
-                self.barcode_entry.focus()
-        elif (e.key == "\x03" or e.key == "Tab") and not self.is_editing:
-             self.handle_barcode()
         self.page.update()
 
     def update_sale_display(self, focus_on_=None, skip_price_update_for=None):
@@ -613,17 +613,47 @@ class ProductApp:
             reset_editing()
 
         def compare(e):
-            entered_barcode = barcode_input.value
-            if entered_barcode:
-                if entered_barcode == barcode:
-                    self.page.close(dlg)
-                    self.is_editing = False # Reset before opening editor
-                    self.editor.open(barcode=entered_barcode)
+            # Get value from control if possible, else from ref
+            val = e.control.value if e and e.control else barcode_input.value
+            if not val: val = ""
+            
+            # Aggressive cleanup
+            entered_clean = "".join(c for c in val if c.isdigit())
+            original_clean = "".join(c for c in barcode if c.isdigit())
+            
+            print(f"DEBUG: Compare '{original_clean}' vs '{entered_clean}' (Raw: '{val}')")
+
+            self.page.close(dlg)
+            self.is_editing = False
+
+            if entered_clean and entered_clean == original_clean:
+                # Confirmed: It IS a new product (or at least confirmed code)
+                self.editor.open(barcode=original_clean)
+            elif entered_clean:
+                # Mismatch: The user scanned something else.
+                # Check if this new code exists in DB
+                matching = self.product_db.get_products_by_barcode_and_shop(entered_clean, self.shop)
+                
+                if matching:
+                     if len(matching) == 1:
+                         self.sale.add_product(matching[0])
+                         self.update_sale_display(focus_on_=matching[0])
+                         self.barcode_entry.value = ""
+                     else:
+                         # Multiple? Just reopen search for it (Dropdown)
+                         self.barcode_entry.value = entered_clean
+                         self.handle_barcode() 
                 else:
-                    self.page.close(dlg)
-                    self.is_editing = False
-                    self.barcode_entry.value = entered_barcode
-                    self.handle_barcode()
+                     # Not found in DB either, so assume they want to create THIS code.
+                     self.editor.open(barcode=entered_clean)
+            else:
+                # Empty input
+                self.barcode_entry.value = ""
+
+        def force_create(e):
+             self.page.close(dlg)
+             self.is_editing = False
+             self.editor.open(barcode=barcode)
 
         barcode_input = ft.TextField(
             label="Código de Barras",
