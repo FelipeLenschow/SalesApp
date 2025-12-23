@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "SalesApp"
-version = "0.1.2"
+version = "2.1.0"
 description = "Sales Management Application"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,3 +24,4 @@ packages = ["src"]
 artifacts = ["src/embedded_credentials.py"]
 
 [tool.hatch.build.targets.app]
+distribution-repo = "https://github.com/FelipeLenschow/SalesApp"

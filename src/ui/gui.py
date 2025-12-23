@@ -17,7 +17,7 @@ import src.ui.sync_client as sync_client
 
 import src.db_sqlite as sqlite_db
 
-Version = "1.1.0"
+Version = "2.1.0"
 
 
 class ProductApp:

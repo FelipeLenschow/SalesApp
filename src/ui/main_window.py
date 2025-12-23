@@ -139,6 +139,7 @@ class MainWindow:
                         [
                             ft.Text("Sorveteria", size=36, weight=ft.FontWeight.BOLD, color="white"),
                             ft.Text(f"   {self.app.shop}", size=24, color="white"),
+                            ft.Text(f"   v{self.app.Version}", size=12, color="white70"),
                         ],
                         spacing=-3
                     ),
