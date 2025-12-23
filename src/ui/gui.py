@@ -42,6 +42,11 @@ class ProductApp:
         self.is_editing = False # Flag to track if edit dialog is open
         self.last_barcode_scan = 0 # Timestamp of last barcode scan to prevent instant closing
         
+        # Global Scanner Buffer
+        self.scan_buffer = ""
+        self.is_scanning = False
+        self.last_scan_time = 0
+        
         # Initialize Cloud DB for price suggestions
         try:
             self.aws_db = Database()
@@ -295,14 +300,17 @@ class ProductApp:
         else:
             self.ui.hide_dropdown()
 
-    def handle_barcode(self, event=None):
+    def handle_barcode(self, event=None, override_barcode=None):
         if self.is_editing:
              return
              
         # Update timestamp to prevent on_blur from closing logic
         self.last_barcode_scan = time.time()
         
-        barcode = self.barcode_entry.value.strip()
+        if override_barcode is not None:
+            barcode = override_barcode.strip()
+        else:
+            barcode = self.barcode_entry.value.strip()
 
         if not barcode:
             return
@@ -383,9 +391,61 @@ class ProductApp:
         self.page.update()
 
     def on_key_event(self, e: ft.KeyboardEvent):
-        if (e.key == "F12" or e.key == "End") and not self.is_editing:
-            self.barcode_entry.focus()
-        elif e.key == "Tab" and not self.is_editing:
+        # GLOBAL SCANNER LOGIC
+        # Only enable global scanner if NOT in an editing dialog
+        if not self.is_editing:
+            if e.key == "F12":
+                # If we are already scanning, this might be a repeat key signal from the scanner
+                # Ignore it to avoid clearing the buffer mid-scan
+                if self.is_scanning:
+                     self.last_scan_time = time.time()
+                     return
+                     
+                # Start of scan sequence
+                self.is_scanning = True
+                self.scan_buffer = ""
+                self.last_scan_time = time.time()
+                
+                # Move focus to hidden target to prevent visual noise
+                try:
+                    self.scanner_focus_target.focus()
+                    self.scanner_focus_target.update()
+                except:
+                    pass
+                return
+
+            if self.is_scanning:
+                # Check for timeout (scanner is fast, manual typing is slow)
+                if time.time() - self.last_scan_time > 0.3: # 300ms timeout
+                    self.is_scanning = False
+                    self.scan_buffer = ""
+                    # Fallthrough to normal handling (maybe it was just a manual F12 press?)
+                else:
+                    self.last_scan_time = time.time()
+                    if e.key == "Enter":
+                        # End of scan sequence
+                        # Sanitize: Strip non-digits (e.g. trailing 'C' or other headers)
+                        raw_code = self.scan_buffer
+                        final_code = "".join(filter(str.isdigit, raw_code))
+                        
+                        self.is_scanning = False
+                        self.scan_buffer = ""
+                        
+                        if final_code:
+                            # Force update to clear any garbage from focused fields
+                            # (The characters might have been typed into the field before we caught them)
+                            # We rely on update_sale_display to reset the values from backend
+                            self.handle_barcode(override_barcode=final_code)
+                        return
+                    else:
+                        # Append character to buffer
+                        if len(e.key) == 1:
+                            self.scan_buffer += e.key
+                        return
+
+        # Normal Key Handling
+        # REMOVED "End" key binding as requested
+        if e.key == "Tab" and not self.is_editing:
              self.handle_barcode()
         elif e.key == "F11":
             self.finalize_sale(self.sale.id)
@@ -679,6 +739,8 @@ class ProductApp:
         self.page.update()
 
     def update_quantity_dynamic(self, product_id, quantity_var):
+        if self.is_scanning:
+            return
         try:
             new_quantity = int(quantity_var)
             if new_quantity <= 0:
@@ -692,6 +754,8 @@ class ProductApp:
                 self.show_error(f"Por favor, insira um número válido. ({quantity_var})")
 
     def update_price_dynamic(self, product_id, price_var):
+        if self.is_scanning:
+            return
         try:
             # Handle comma/dot and currency symbols if present
             clean_price = price_var.replace('R$', '').replace(' ', '').replace(',', '.')

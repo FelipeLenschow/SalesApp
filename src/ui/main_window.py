@@ -187,10 +187,19 @@ class MainWindow:
             height=60,
         )
 
+        # Hidden focus target for scanner
+        self.app.scanner_focus_target = ft.TextField(
+            width=0,
+            height=0,
+            opacity=0,
+            read_only=False, # Must be editable to "absorb" input
+        )
+
         self.app.barcode_stack = ft.Stack(
             controls=[
                 self.app.barcode_entry,
                 self.app.barcode_dropdown,
+                self.app.scanner_focus_target, # Add hidden target here
             ],
             height=66,
             clip_behavior=ft.ClipBehavior.NONE
