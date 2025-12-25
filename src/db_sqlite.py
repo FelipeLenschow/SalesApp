@@ -4,8 +4,21 @@ import json
 from datetime import datetime
 import os
 
+import sys
+
 class Database:
-    def __init__(self, db_path='database.db'):
+    def __init__(self, db_path=None):
+        if db_path is None:
+            # Check sys.argv for --db
+            if "--db" in sys.argv:
+                try:
+                    idx = sys.argv.index("--db")
+                    db_path = sys.argv[idx+1]
+                except:
+                    db_path = 'database.db'
+            else:
+                db_path = 'database.db'
+        
         self.db_path = db_path
         self.init_db()
 
@@ -361,6 +374,18 @@ class Database:
         except:
              pass
         return []
+
+    def get_selected_shop(self):
+        return self.get_config('selected_shop')
+
+    def set_selected_shop(self, shop_name):
+        self.set_config('selected_shop', shop_name)
+
+    def get_last_version(self):
+        return self.get_config('last_version')
+
+    def set_last_version(self, version):
+        self.set_config('last_version', version)
             
     
     def add_product(self, product_info, shop_name=None, sync_status='modified'):

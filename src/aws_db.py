@@ -21,13 +21,23 @@ class DecimalEncoder(json.JSONEncoder):
 class Database:
     def __init__(self, region_name='us-east-1'):
         # 1. Try to load embedded credentials (priority for built exe)
+        # 1. Try to load embedded credentials (priority for built exe)
+        print("DEBUG: Waking up Database...")
         try:
-            import src.embedded_credentials as embedded
+            try:
+                import src.embedded_credentials as embedded
+                print("DEBUG: Loaded src.embedded_credentials")
+            except ImportError:
+                import embedded_credentials as embedded
+                print("DEBUG: Loaded embedded_credentials (root)")
+
             os.environ['AWS_ACCESS_KEY_ID'] = embedded.AWS_ACCESS_KEY_ID
             os.environ['AWS_SECRET_ACCESS_KEY'] = embedded.AWS_SECRET_ACCESS_KEY
             if hasattr(embedded, 'AWS_DEFAULT_REGION'):
                  region_name = embedded.AWS_DEFAULT_REGION
+            print("DEBUG: Credentials applied.")
         except ImportError:
+            print("DEBUG: No embedded credentials found.")
             # 2. Check for local credentials file in project root (dev mode)
             local_creds = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.aws', 'credentials')
             if os.path.exists(local_creds):
@@ -143,6 +153,43 @@ class Database:
         except ClientError as e:
             print(f"Error deleting shop: {e}")
             raise e
+
+    def get_shops_with_versions(self):
+        """
+        Returns list of dicts: [{'name': 'Shop', 'version': 'v1.0'}, ...]
+        """
+        try:
+            response = self.public_shops_table.scan()
+            items = response.get('Items', [])
+            result = []
+            for item in items:
+                result.append({
+                    'name': item['name'],
+                    'version': item.get('version')
+                })
+            return result
+        except ClientError as e:
+            print(f"Error fetching shops with versions: {e}")
+            return []
+
+    def get_target_version(self):
+        """
+        Scans public shops to find a 'version' attribute.
+        Returns the version string if found/consistent.
+        Currently just grabs the first non-empty version found, 
+        assuming all shops should be on same version or there's a master entry.
+        """
+        try:
+            response = self.public_shops_table.scan()
+            items = response.get('Items', [])
+            for item in items:
+                v = item.get('version')
+                if v:
+                    return v # Return first found for now
+            return None
+        except Exception as e:
+            print(f"Error fetching target version: {e}")
+            return None
 
 
     # --- Product Management ---

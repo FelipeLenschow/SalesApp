@@ -10,7 +10,6 @@ from src.aws_db import Database
 import src.aws_db as aws_db_module
 import src.ui.main_window
 import src.ui.product_editor
-import src.ui.shop_selection
 import src.sale as sale
 import src.payment as payment
 import src.ui.sync_client as sync_client
@@ -64,11 +63,16 @@ class ProductApp:
 
         # Check for saved shop in LOCAL DB
         local_conn = sqlite_db.Database()
-        saved_shop = local_conn.get_config('current_shop')
         
-        if saved_shop:
-             self.product_db = local_conn  # Use local DB
-             self.shop = saved_shop
+        # Priority: Check 'selected_shop' (set by Launcher)
+        # Fallback: 'current_shop' (legacy)
+        shop_name = local_conn.get_selected_shop() 
+        if not shop_name:
+            shop_name = local_conn.get_config('current_shop')
+
+        if shop_name:
+             self.product_db = local_conn
+             self.shop = shop_name
              self.pay = payment.Payment(self, self.shop)
              
              self.ui = src.ui.main_window.MainWindow(self, page)
@@ -80,107 +84,25 @@ class ProductApp:
                 self.ui.update_custom_buttons_visibility()
              self.page.update()
              self.editor = src.ui.product_editor.ProductEditor(self)
-             self.editor = src.ui.product_editor.ProductEditor(self)
              self.new_sale()
         else:
-            # Check if we need to download DB (first run or reset)
-            need_download = True
-            try:
-                # Check if we have any products locally
-                with local_conn.get_connection() as conn:
-                    count = conn.execute("SELECT count(*) FROM products").fetchone()[0]
-                    if count > 0:
-                        need_download = False
-            except:
-                pass
+             # No shop selected. This suggests bypassed launcher.
+             # User requested removal of ShopSelection in app.
+             # So we must error out or show instructions.
+             self.page.add(ft.Text("Erro: Nenhuma loja selecionada. Por favor, inicie pelo Launcher.", color="red", size=20))
+             self.page.update()
+             return
 
-            if need_download:
-                self.show_loading_screen()
-            else:
-                self.product_db = local_conn # Use local DB even for selection (it has data now)
-                selection_ui = src.ui.shop_selection.ShopSelection(self, self.page)
-                selection_ui.show()
+        # Database sync is now handled by Launcher.
+        # Ensure DB has data or at least we are starting up.
+
 
         # Start auto-sync thread
         self.sync_manager = sync_client.SyncManager(self)
         threading.Thread(target=self.sync_manager.start_auto_sync, daemon=True).start()
 
 
-    def show_loading_screen(self):
-        self.page.clean()
-        self.page.bgcolor = "#8b0000"
-        self.page.window.full_screen = False
-        self.page.window.width = 400
-        self.page.window.height = 300
-        self.page.window.center()
-        
-        status_text = ft.Text("Conectando ao servidor...", color="white", size=16)
-        progress_bar = ft.ProgressBar(width=300, color="amber", bgcolor="#440000")
-        
-        self.page.add(
-            ft.Column(
-                [
-                    ft.Text("Configuração Inicial", size=24, weight="bold", color="white"),
-                    ft.Text("Baixando banco de dados completo...", color="white70"),
-                    ft.Container(height=20),
-                    progress_bar,
-                    ft.Container(height=10),
-                    status_text
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                expand=True
-            )
-        )
-        self.page.update()
-        
-        def download_task():
-            try:
-                # 1. Connect AWS
-                status_text.value = "Conectando AWS..."
-                self.page.update()
-                aws_conn = aws_db_module.Database()
-                
-                # 2. Fetch
-                status_text.value = "Baixando produtos (Isso pode demorar)..."
-                self.page.update()
-                
-                def on_progress(count):
-                    status_text.value = f"Baixado: {count} produtos..."
-                    self.page.update()
 
-                products = aws_conn.get_all_products_grouped(progress_callback=on_progress)
-                
-                # 3. Save Local
-                status_text.value = "Salvando no cache local..."
-                self.page.update()
-                local_conn = sqlite_db.Database()
-                local_conn.replace_all_products(products)
-                
-                # FIX: Set timestamp so next sync is Delta, not Full
-                local_conn.set_last_sync_timestamp(datetime.now().isoformat())
-                
-                # 4. Proceed
-                status_text.value = "Concluído!"
-                self.page.update()
-                time.sleep(1)
-                
-                self.product_db = local_conn
-                selection_ui = src.ui.shop_selection.ShopSelection(self, self.page)
-                
-                # Must run UI updates on main thread usually, but Flet often handles simple app struct.
-                # Ideally we clear and show selection.
-                self.page.clean()
-                selection_ui.show()
-                
-            except Exception as e:
-                status_text.value = f"Erro: {e}"
-                status_text.color = "red"
-                progress_bar.value = 0
-                self.page.update()
-                print(f"Download error: {e}")
-
-        threading.Thread(target=download_task, daemon=True).start()
 
 
     def _handle_resize(self, e=None):

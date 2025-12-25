@@ -4,5 +4,6 @@ database.db
 *.py[cod]
 
 dist/
-build/
-*.spec
+build/temp_launcher
+build/temp_app
+build/temp
