@@ -12,6 +12,7 @@ class ProductEditor:
         
         # Set editing flag to block F12 from focusing main window
         self.app.is_editing = True
+        self.app.active_input = None # Reset
         
         # Track if close was intentional (Save or Discartar button)
         explicit_close = False
@@ -43,15 +44,32 @@ class ProductEditor:
                 'preco': ''
             }
 
+        # Helper to set active input
+        def set_active_input(e):
+             self.app.active_input = e.control
+
         # Create TextFields and store references
         barcode_field = ft.TextField(
             label="Codigo de barras", 
             value=str(current_data['barcode']),
-            autofocus=True # Focus this field specifically
+            autofocus=True, # Focus this field specifically
+            on_focus=set_active_input
         )
-        categoria_field = ft.TextField(label="Categoria", value=current_data['categoria'])
-        sabor_field = ft.TextField(label="Sabor", value=current_data['sabor'])
-        preco_field = ft.TextField(label="Preco", value=str(current_data['preco']))
+        categoria_field = ft.TextField(
+            label="Categoria", 
+            value=current_data['categoria'],
+            on_focus=set_active_input
+        )
+        sabor_field = ft.TextField(
+            label="Sabor", 
+            value=current_data['sabor'],
+            on_focus=set_active_input
+        )
+        preco_field = ft.TextField(
+            label="Preco", 
+            value=str(current_data['preco']),
+            on_focus=set_active_input
+        )
 
         def check_dirty():
             # Check if any field other than barcode has content

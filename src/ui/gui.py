@@ -39,6 +39,7 @@ class ProductApp:
         self.manual_add_list = []
         # State flags
         self.is_editing = False # Flag to track if edit dialog is open
+        self.active_input = None # Track currently focused input field
         self.last_barcode_scan = 0 # Timestamp of last barcode scan to prevent instant closing
         
         
@@ -119,10 +120,12 @@ class ProductApp:
             self.scanner_fab.bgcolor = ft.Colors.GREEN
             self.scanner_fab.icon = ft.Icons.USB
             self.scanner_fab.tooltip = f"Scanner Conectado ({self.serial_scanner.port})"
+            self.scanner_fab.on_click = None # Disable click when connected
         else:
             self.scanner_fab.bgcolor = ft.Colors.RED
             self.scanner_fab.icon = ft.Icons.USB_OFF
             self.scanner_fab.tooltip = "Scanner Desconectado (Clique para reconectar)"
+            self.scanner_fab.on_click = lambda e: self.reconnect_scanner() # Restore click
         self.scanner_fab.update()
 
     def reconnect_scanner(self):
@@ -303,6 +306,26 @@ class ProductApp:
 
     def handle_barcode(self, event=None, override_barcode=None):
         if self.is_editing:
+             if self.active_input:
+                 if override_barcode:
+                     text_to_paste = override_barcode.strip()
+                 else:
+                     text_to_paste = self.barcode_entry.value.strip()
+                     self.barcode_entry.value = "" # Clear global entry
+                     self.barcode_entry.update()
+                 
+                 current_val = self.active_input.value or ""
+                 self.active_input.value = current_val + text_to_paste
+                 self.active_input.update()
+                 
+                 if self.active_input.on_submit:
+                     self.active_input.on_submit(ft.ControlEvent(
+                        target="scanner",
+                        name="submit",
+                        data=text_to_paste,
+                        control=self.active_input,
+                        page=self.page
+                     ))
              return
 
         # Update timestamp to prevent on_blur from closing logic
@@ -655,7 +678,8 @@ class ProductApp:
         barcode_input = ft.TextField(
             label="Código de Barras",
             autofocus=True,
-            on_submit=compare
+            on_submit=compare,
+            on_focus=lambda e: setattr(self, 'active_input', e.control)
         )
 
         dlg = ft.AlertDialog(
