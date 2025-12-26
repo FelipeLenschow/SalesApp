@@ -327,5 +327,5 @@ class SyncManager:
                 
                 self.update_fab_status(ft.Colors.RED, f"Erro: {str(e)}")
 
-        threading.Thread(target=sync_process).start()
+        threading.Thread(target=sync_process, daemon=True).start()
 

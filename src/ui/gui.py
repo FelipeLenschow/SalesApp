@@ -13,11 +13,11 @@ import src.ui.product_editor
 import src.sale as sale
 import src.payment as payment
 import src.ui.sync_client as sync_client
+from src.serial_scanner import SerialScanner
 
 import src.db_sqlite as sqlite_db
 
-Version = "1.1.0"
-
+Version = "1.2.0"
 
 class ProductApp:
     def __init__(self, page: ft.Page):
@@ -41,10 +41,6 @@ class ProductApp:
         self.is_editing = False # Flag to track if edit dialog is open
         self.last_barcode_scan = 0 # Timestamp of last barcode scan to prevent instant closing
         
-        # Global Scanner Buffer
-        self.scan_buffer = ""
-        self.is_scanning = False
-        self.last_scan_time = 0
         
         # Initialize Cloud DB for price suggestions
         try:
@@ -53,9 +49,13 @@ class ProductApp:
             self.aws_db = None
             print("Failed to init AWS DB for suggestions")
 
+        # SERIAL SCANNER INIT
+        self.serial_scanner = None
+        # Init in background to avoid blocking UI if port is stuck
+        threading.Thread(target=self.init_serial_scanner, daemon=True).start()
+
 
         # Keyboard event handling
-        self.page.on_keyboard_event = self.on_key_event
         self.page.on_resized = self._handle_resize
         self.page.on_window_event = self.on_window_event
 
@@ -102,9 +102,6 @@ class ProductApp:
         threading.Thread(target=self.sync_manager.start_auto_sync, daemon=True).start()
 
 
-
-
-
     def _handle_resize(self, e=None):
         # Check if window was maximized by OS and switch to full screen
         if self.page.window.maximized:
@@ -115,11 +112,93 @@ class ProductApp:
             self.page.update()
 
 
+    def update_scanner_status(self, connected):
+        if not hasattr(self, 'scanner_fab'): return
+        
+        if connected:
+            self.scanner_fab.bgcolor = ft.Colors.GREEN
+            self.scanner_fab.icon = ft.Icons.USB
+            self.scanner_fab.tooltip = f"Scanner Conectado ({self.serial_scanner.port})"
+        else:
+            self.scanner_fab.bgcolor = ft.Colors.RED
+            self.scanner_fab.icon = ft.Icons.USB_OFF
+            self.scanner_fab.tooltip = "Scanner Desconectado (Clique para reconectar)"
+        self.scanner_fab.update()
+
+    def reconnect_scanner(self):
+        print("Reconnecting scanner...")
+        if self.serial_scanner:
+            self.serial_scanner.stop()
+        
+        # Reset visual state to loading/grey maybe?
+        if hasattr(self, 'scanner_fab'):
+            self.scanner_fab.bgcolor = ft.Colors.ORANGE
+            self.scanner_fab.update()
+            
+        threading.Thread(target=self.init_serial_scanner, daemon=True).start()
+
+    def init_serial_scanner(self):
+        # 1. Get Config
+        local_conn = sqlite_db.Database()
+        port = local_conn.get_config('scanner_port')
+        
+        if not port:
+            # Auto-detect logic
+            port = SerialScanner.find_scanner_port()
+            if port:
+                print(f"Auto-detected scanner on {port}")
+            else:
+                 print("Scanner not found via auto-detection.")
+        
+        if port:
+            self.serial_scanner = SerialScanner(port=port)
+            self.serial_scanner.set_callback(self.on_barcode_scanned)
+            self.serial_scanner.set_error_callback(self.on_scanner_error)
+            started = self.serial_scanner.start()
+            if not started:
+                print(f"Failed to start scanner on {port}")
+                self.show_error(f"Erro ao conectar leitor na porta {port}")
+                self.update_scanner_status(False)
+            else:
+                print(f"Scanner started on {port}")
+                self.update_scanner_status(True)
+        else:
+            self.update_scanner_status(False)
+
+    def on_barcode_scanned(self, barcode):
+        # Dispatch to main thread to be safe with UI updates
+        # Check if we need to filter characters (some scanners send CR/LF which is handled by scanner class, but check just in case)
+        barcode = barcode.strip()
+        if not barcode: return
+
+        # IMPORTANT: This runs in background thread. 
+        # Flet often handles thread safety for value updates, but let's be careful.
+        # We can use our handle_barcode logic.
+        self.handle_barcode(override_barcode=barcode)
+
+    def on_scanner_error(self, msg):
+        print(f"Scanner Error: {msg}") 
+        self.update_scanner_status(False)
+        
+        # Auto-reconnect logic
+        # Prevent spamming reconnects if one is already scheduled or running?
+        # Ideally, we wait a few seconds and try again.
+        def schedule_reconnect():
+            time.sleep(3) # Wait 3 seconds
+            print("Auto-reconnecting scanner...")
+            self.init_serial_scanner()
+
+        threading.Thread(target=schedule_reconnect, daemon=True).start()
+
+
 
     def on_window_event(self, e):
         if e.data == "maximize":
             self.page.window.maximized = False
             self.page.window.full_screen = True
+            if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
+                self.ui.update_custom_buttons_visibility()
+            self.page.update()
             if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
                 self.ui.update_custom_buttons_visibility()
             self.page.update()
@@ -236,7 +315,7 @@ class ProductApp:
 
         if not barcode:
             return
-
+                
         # Do NOT clear value here immediately
 
         # Handle manual value entry
@@ -263,6 +342,12 @@ class ProductApp:
                 pass
 
         # Handle barcode input
+        if not barcode.isdigit():
+             # Try to sanitize
+             sanitized = "".join(filter(str.isdigit, barcode))
+             if sanitized:
+                 barcode = sanitized
+        
         if barcode.isdigit():
             # Handle barcode search
             matching_products = self.product_db.get_products_by_barcode_and_shop(barcode, self.shop)
@@ -310,72 +395,6 @@ class ProductApp:
             # Handle text search enter (Done searching)
             self.ui.hide_dropdown()
 
-        self.page.update()
-
-    def on_key_event(self, e: ft.KeyboardEvent):
-        # GLOBAL SCANNER LOGIC
-        # Only enable global scanner if NOT in an editing dialog
-        if not self.is_editing:
-            if e.key == "F12":
-                # If we are already scanning, this might be a repeat key signal from the scanner
-                # Ignore it to avoid clearing the buffer mid-scan
-                if self.is_scanning:
-                     self.last_scan_time = time.time()
-                     return
-                     
-                # Start of scan sequence
-                self.is_scanning = True
-                self.scan_buffer = ""
-                self.last_scan_time = time.time()
-                
-                # Move focus to hidden target to prevent visual noise
-                try:
-                    self.scanner_focus_target.focus()
-                    self.scanner_focus_target.update()
-                except:
-                    pass
-                return
-
-            if self.is_scanning:
-                # Check for timeout (scanner is fast, manual typing is slow)
-                if time.time() - self.last_scan_time > 0.3: # 300ms timeout
-                    self.is_scanning = False
-                    self.scan_buffer = ""
-                    # Fallthrough to normal handling (maybe it was just a manual F12 press?)
-                else:
-                    self.last_scan_time = time.time()
-                    if e.key == "Enter":
-                        # End of scan sequence
-                        # Sanitize: Strip non-digits (e.g. trailing 'C' or other headers)
-                        raw_code = self.scan_buffer
-                        final_code = "".join(filter(str.isdigit, raw_code))
-                        
-                        self.is_scanning = False
-                        self.scan_buffer = ""
-                        
-                        if final_code:
-                            # Force update to clear any garbage from focused fields
-                            # (The characters might have been typed into the field before we caught them)
-                            # We rely on update_sale_display to reset the values from backend
-                            self.handle_barcode(override_barcode=final_code)
-                        return
-                    else:
-                        # Append character to buffer
-                        if len(e.key) == 1:
-                            self.scan_buffer += e.key
-                        return
-
-        # Normal Key Handling
-        # REMOVED "End" key binding as requested
-        if e.key == "Tab" and not self.is_editing:
-             self.handle_barcode()
-        elif e.key == "F11":
-            self.finalize_sale(self.sale.id)
-        elif e.key == "F12" or e.key == "\x02" or (e.ctrl and e.key == "B"):
-            if not self.is_editing:
-                self.barcode_entry.focus()
-        elif (e.key == "\x03" or e.key == "Tab") and not self.is_editing:
-             self.handle_barcode()
         self.page.update()
 
     def update_sale_display(self, focus_on_=None, skip_price_update_for=None):
@@ -636,8 +655,6 @@ class ProductApp:
         self.page.update()
 
     def update_quantity_dynamic(self, product_id, quantity_var):
-        if self.is_scanning:
-            return
         try:
             new_quantity = int(quantity_var)
             if new_quantity <= 0:
@@ -651,8 +668,6 @@ class ProductApp:
                 self.show_error(f"Por favor, insira um número válido. ({quantity_var})")
 
     def update_price_dynamic(self, product_id, price_var):
-        if self.is_scanning:
-            return
         try:
             # Handle comma/dot and currency symbols if present
             clean_price = price_var.replace('R$', '').replace(' ', '').replace(',', '.')

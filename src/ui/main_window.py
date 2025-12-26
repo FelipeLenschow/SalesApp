@@ -139,8 +139,17 @@ class MainWindow:
                         [
                             ft.Text("Sorveteria", size=36, weight=ft.FontWeight.BOLD, color="white"),
                             ft.Text(f"   {self.app.shop}", size=24, color="white"),
+                            ft.Container(
+                                content=ft.Text(f"v{self.app.Version}", size=10, color="white", weight=ft.FontWeight.BOLD),
+                                bgcolor=ft.Colors.BLUE_GREY_700,
+                                padding=ft.padding.symmetric(horizontal=4, vertical=1),
+                                border_radius=4,
+                                margin=ft.margin.only(top=2, left=4) 
+                            ),
                         ],
-                        spacing=-3
+                        spacing=0,
+                        alignment=ft.MainAxisAlignment.START,
+                        horizontal_alignment=ft.CrossAxisAlignment.START
                     ),
                     ft.Container(expand=True),
                     self.custom_restore_btn,
@@ -318,8 +327,16 @@ class MainWindow:
             tooltip="Cadastrar Produto",
         )
 
+        self.app.scanner_fab = ft.FloatingActionButton(
+            icon=ft.Icons.USB,
+            bgcolor=ft.Colors.GREY, 
+            on_click=lambda e: self.app.reconnect_scanner(),
+            tooltip="Status Scanner (Clique para reconectar)",
+        )
+
         self.page.floating_action_button = ft.Row(
             controls=[
+                self.app.scanner_fab,
                 self.app.register_fab,
                 self.app.history_fab,
                 self.app.sync_fab
