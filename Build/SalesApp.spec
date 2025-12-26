@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['C:\\Users\\Felipe\\Desktop\\Sales\\main.py'],
+    ['c:\\Users\\Felipe\\Desktop\\Sales\\main.py'],
     pathex=[],
     binaries=[],
     datas=[],

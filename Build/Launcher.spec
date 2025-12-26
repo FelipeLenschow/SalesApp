@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['C:\\Users\\Felipe\\Desktop\\Sales\\src\\launcher.py'],
+    ['c:\\Users\\Felipe\\Desktop\\Sales\\src\\launcher.py'],
     pathex=[],
     binaries=[],
     datas=[],

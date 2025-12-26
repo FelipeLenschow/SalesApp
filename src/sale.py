@@ -41,7 +41,7 @@ class Sale:
 
     def update_quantity(self, product_id, quantity):
         if product_id in self.current_sale:
-            self.current_sale[product_id]['quantidade'] = max(quantity, 0)
+            self.current_sale[product_id]['quantidade'] = max(float(quantity), 0)
             if self.current_sale[product_id]['quantidade'] == 0:
                 self.remove_product(product_id)
 

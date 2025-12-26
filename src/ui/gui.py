@@ -17,7 +17,7 @@ from src.serial_scanner import SerialScanner
 
 import src.db_sqlite as sqlite_db
 
-Version = "1.2.0"
+Version = "2.2.0"
 
 class ProductApp:
     def __init__(self, page: ft.Page):
@@ -397,7 +397,7 @@ class ProductApp:
 
         self.page.update()
 
-    def update_sale_display(self, focus_on_=None, skip_price_update_for=None):
+    def update_sale_display(self, focus_on_=None, skip_price_update_for=None, skip_quantity_update_for=None):
         # Aplica promoções e calcula o preço final
         final_price = self.sale.calculate_total()
         self.final_price_label.value = f"R${final_price:.2f}"
@@ -433,7 +433,12 @@ class ProductApp:
                 'product_id': product_id,
                 'barcode': product_series.get('barcode', '')
             }
-            self.create_or_update_product_widget(product_id, details, skip_price_update=(product_id == skip_price_update_for))
+            self.create_or_update_product_widget(
+                product_id, 
+                details, 
+                skip_price_update=(product_id == skip_price_update_for),
+                skip_quantity_update=(product_id == skip_quantity_update_for)
+            )
 
         # Se um produto foi passado, focar no widget de quantidade correspondente
         if focus_on_ is not None:
@@ -451,7 +456,7 @@ class ProductApp:
         self.create_or_update_sale_widgets()
         self.page.update()
 
-    def create_or_update_product_widget(self, product_id, details, skip_price_update=False):
+    def create_or_update_product_widget(self, product_id, details, skip_price_update=False, skip_quantity_update=False):
 
         if product_id not in self.product_widgets:
             product_text = ft.Text(
@@ -469,8 +474,16 @@ class ProductApp:
             # Product Name (implied by previous context, but target is specific controls)
             
             # Create quantity controls
+            # Create quantity controls
+            qty_val = details['quantidade']
+            # Format: remove .0 if integer
+            if isinstance(qty_val, float) and qty_val.is_integer():
+                qty_str = str(int(qty_val))
+            else:
+                qty_str = str(qty_val)
+
             quantity_field = ft.TextField(
-                value=str(details['quantidade']),
+                value=qty_str,
                 width=70,
                 text_size=font_size,
                 on_change=lambda e, row=product_id: self.update_quantity_dynamic(row, e.control.value)
@@ -570,7 +583,15 @@ class ProductApp:
             )
 
             # Update quantity field
-            widgets['quantity_field'].value = str(details['quantidade'])
+            if not skip_quantity_update:
+                qty_val = details['quantidade']
+                if isinstance(qty_val, float) and qty_val.is_integer():
+                    qty_str = str(int(qty_val))
+                else:
+                    qty_str = str(qty_val)
+                    
+                widgets['quantity_field'].value = qty_str
+                widgets['quantity_field'].update()
 
             # Determine price and color
             price = details['preco']
@@ -584,7 +605,7 @@ class ProductApp:
 
             # Force UI updates
             widgets['product_text'].update()
-            widgets['quantity_field'].update()
+            # quantity update moved inside conditional
             widgets['price_text'].update()
 
     def calcular_troco(self, event=None):
@@ -656,15 +677,23 @@ class ProductApp:
 
     def update_quantity_dynamic(self, product_id, quantity_var):
         try:
-            new_quantity = int(quantity_var)
+            # Allow decimal quantities (replace comma with dot if needed)
+            clean_quantity = quantity_var.replace(',', '.')
+            if not clean_quantity:
+                return
+
+            new_quantity = float(clean_quantity)
             if new_quantity <= 0:
                 new_quantity = 0
                 self.delete_product(product_id)
             if product_id in self.sale.current_sale:
                 self.sale.current_sale[product_id]['quantidade'] = max(new_quantity, 0)
-            self.update_sale_display()
+            self.update_sale_display(skip_quantity_update_for=product_id)
         except ValueError:
-            if quantity_var != "":
+            # Allow "unfinished" numbers like "1."
+            if quantity_var.strip().endswith('.') or quantity_var.strip().endswith(','):
+                pass
+            elif quantity_var != "":
                 self.show_error(f"Por favor, insira um número válido. ({quantity_var})")
 
     def update_price_dynamic(self, product_id, price_var):
@@ -748,14 +777,14 @@ class ProductApp:
                                         icon_size=icon_size,
                                         icon_color=ft.Colors.GREEN_300,
                                         on_click=lambda e, s=sale: self.finalize_sale(s.id),
-                                        tooltip="Finalize Sale",
+                                        tooltip="Finalizar Venda",
                                     ),
                                     ft.IconButton(
                                         icon=ft.Icons.CLOSE,
                                         icon_size=icon_size,
                                         icon_color=ft.Colors.RED_300,
-                                        on_click=lambda e, s=sale: self.delete_stored_sale(s.id),
-                                        tooltip="Close Tab"
+                                        on_click=lambda e, s=sale: self.confirm_delete_sale(s.id),
+                                        tooltip="Fechar Venda"
                                     )
                                 ],
                                 spacing=0,
@@ -780,6 +809,26 @@ class ProductApp:
                     existing.bgcolor = ft.Colors.BLUE_700
 
         self.stored_sales_row.update()
+        self.page.update()
+
+    def confirm_delete_sale(self, sale_id):
+        def close_dlg(e):
+            self.page.close(dlg)
+
+        def confirm(e):
+            self.page.close(dlg)
+            self.delete_stored_sale(sale_id)
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Confirmar cancelamento"),
+            content=ft.Text("Tem certeza que deseja fechar esta venda sem salvar?"),
+            actions=[
+                ft.TextButton("Sim", on_click=confirm),
+                ft.TextButton("Não", on_click=close_dlg)
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.open(dlg)
         self.page.update()
 
     def delete_stored_sale(self, sale_id):
