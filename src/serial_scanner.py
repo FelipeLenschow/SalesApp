@@ -61,11 +61,13 @@ class SerialScanner:
             return
 
         try:
+            print(f"DEBUG: Attempting to open serial port {self.port}...", flush=True)
             self.serial_conn = serial.Serial(
                 port=self.port,
                 baudrate=self.baudrate,
                 timeout=self.timeout
             )
+            print("DEBUG: Serial port opened successfully.")
             self.running = True
             self.thread = threading.Thread(target=self._read_loop, daemon=True)
             self.thread.start()
@@ -78,60 +80,75 @@ class SerialScanner:
             return False
 
     def stop(self):
+        """
+        Signals the read loop to stop. 
+        The actual connection closure happens in the _read_loop thread.
+        """
+
+        print("Stopping scanner.....")
         self.running = False
+        # Optional: cancel pending read if possible (requires cancel_read support)
         if self.serial_conn:
             try:
-                self.serial_conn.close()
-            except:
-                pass
-            self.serial_conn = None
+                self.serial_conn.cancel_read()
+            except: pass
+        
+        # Wait for thread to finish closing connection
+        if self.thread and self.thread.is_alive():
+            try:
+                # Wait up to 1 second for the thread to finish
+                self.thread.join(timeout=1.0)
+            except: pass
 
     def _read_loop(self):
         buffer = ""
-        while self.running:
-            try:
-                if self.serial_conn and self.serial_conn.is_open:
-                    if self.serial_conn.in_waiting > 0:
-                        # Read available bytes
-                        data = self.serial_conn.read(self.serial_conn.in_waiting)
-                        try:
-                            # Decode and append to buffer
-                            text = data.decode('utf-8', errors='ignore')
-                            buffer += text
-                            
-                            # Check for newline (common suffix for scanners)
-                            if '\n' in buffer or '\r' in buffer:
-                                # Split lines
-                                lines = buffer.splitlines()
+        try:
+            while self.running:
+                try:
+                    if self.serial_conn and self.serial_conn.is_open:
+                        if self.serial_conn.in_waiting > 0:
+                            # Read available bytes
+                            data = self.serial_conn.read(self.serial_conn.in_waiting)
+                            try:
+                                # Decode and append to buffer
+                                text = data.decode('utf-8', errors='ignore')
+                                buffer += text
                                 
-                                # Process all full lines
-                                # Keep the last part if it was incomplete (not ending in newline)
-                                # But splitlines consumes the delimiters.
-                                
-                                # Better approach for simple scanner:
-                                # They usually send CODE + \r\n
-                                if buffer.endswith('\n') or buffer.endswith('\r'):
-                                    # Full message received
-                                    for line in lines:
-                                        clean_line = line.strip()
-                                        if clean_line and self.callback:
-                                            self.callback(clean_line)
-                                    buffer = ""
-                                else:
-                                    # Process complete lines from the middle
-                                    # This is a bit tricky with splitlines, let's just use the fact that
-                                    # we expect a burst of data.
-                                    pass
-
-                        except Exception as decode_err:
-                            print(f"Decode error: {decode_err}")
+                                # Check for newline (common suffix for scanners)
+                                if '\n' in buffer or '\r' in buffer:
+                                    # Split lines
+                                    lines = buffer.splitlines()
+                                    
+                                    # Process all full lines
+                                    if buffer.endswith('\n') or buffer.endswith('\r'):
+                                        # Full message received
+                                        for line in lines:
+                                            clean_line = line.strip()
+                                            if clean_line and self.callback:
+                                                self.callback(clean_line)
+                                        buffer = ""
+                                    else:
+                                        # Process complete lines from the middle
+                                        pass
+    
+                            except Exception as decode_err:
+                                print(f"Decode error: {decode_err}")
+                        else:
+                            time.sleep(0.01) # Sleep to save CPU
                     else:
-                        time.sleep(0.01) # Sleep to save CPU
-                else:
+                        break
+                except Exception as e:
+                    print(f"Scanner loop error: {e}")
+                    if self.error_callback:
+                        self.error_callback(str(e))
+                    self.running = False
                     break
-            except Exception as e:
-                print(f"Scanner loop error: {e}")
-                if self.error_callback:
-                    self.error_callback(str(e))
-                self.running = False
-                break
+        finally:
+            print("Scanner loop exiting, closing connection...", flush=True)
+            if self.serial_conn:
+                 try:
+                     self.serial_conn.close()
+                 except Exception as e:
+                     print(f"Error closing serial connection: {e}", flush=True)
+                 self.serial_conn = None
+            print("Scanner connection closed.", flush=True)
