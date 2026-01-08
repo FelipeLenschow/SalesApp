@@ -13,11 +13,27 @@ class MainWindow:
     def update_custom_buttons_visibility(self):
         if self.custom_restore_btn and self.custom_close_btn:
             is_full_screen = self.page.window.full_screen
-            self.custom_restore_btn.visible = is_full_screen
-            self.custom_close_btn.visible = is_full_screen
+            
+            # Update Icon based on state
+            if is_full_screen:
+                self.custom_restore_btn.icon = ft.Icons.FULLSCREEN_EXIT
+                self.custom_restore_btn.tooltip = "Sair da Tela Cheia"
+            else:
+                self.custom_restore_btn.icon = ft.Icons.FULLSCREEN
+                self.custom_restore_btn.tooltip = "Tela Cheia"
+
+            # Hide buttons on web mode as they are not reliable/needed
+            if self.page.web:
+                self.custom_restore_btn.visible = False
+                self.custom_close_btn.visible = False
+            else:
+                self.custom_restore_btn.visible = True
+                self.custom_close_btn.visible = True
             
             if self.custom_restore_btn.page:
                 self.custom_restore_btn.update()
+            if self.custom_close_btn.page:
+                self.custom_close_btn.update()
             if self.custom_close_btn.page:
                 self.custom_close_btn.update()
 
@@ -107,10 +123,10 @@ class MainWindow:
         # 5. Top Bar
 
         self.custom_restore_btn = ft.IconButton(
-            icon=ft.Icons.FULLSCREEN_EXIT, 
+            icon=ft.Icons.FULLSCREEN, # Default state
             icon_color="white", 
-            tooltip="Sair da Tela Cheia", 
-            visible=False, # Managed by update_custom_buttons
+            tooltip="Tela Cheia", 
+            visible=True,
         )
 
         self.custom_close_btn = ft.IconButton(
@@ -118,12 +134,16 @@ class MainWindow:
             icon_color="red", 
             tooltip="Fechar", 
             on_click=close_app,
-            visible=False, # Managed by update_custom_buttons
+            visible=True,
         )
 
         def toggle_full_screen(e):
-            self.page.window.full_screen = False
+            # Toggle logic
+            new_state = not self.page.window.full_screen
+            print(f"DEBUG: Toggling fullscreen to {new_state}")
+            self.page.window.full_screen = new_state
             self.page.window.maximized = False
+            
             self.update_custom_buttons_visibility()
             self.page.update()
 
