@@ -17,7 +17,7 @@ from src.serial_scanner import SerialScanner
 
 import src.db_sqlite as sqlite_db
 
-Version = "2.2.0"
+Version = "2.2.1"
 
 class ProductApp:
     def __init__(self, page: ft.Page):
@@ -52,8 +52,8 @@ class ProductApp:
 
         # SERIAL SCANNER INIT
         self.serial_scanner = None
-        # Init in background to avoid blocking UI if port is stuck
-        threading.Thread(target=self.init_serial_scanner, daemon=True).start()
+        self.scanner_lock = threading.Lock()
+        self.is_running = True
 
 
         # Keyboard event handling
@@ -102,6 +102,19 @@ class ProductApp:
         self.sync_manager = sync_client.SyncManager(self)
         threading.Thread(target=self.sync_manager.start_auto_sync, daemon=True).start()
 
+        # Init scanner in background AFTER UI is built to avoid race conditions
+        threading.Thread(target=self.init_serial_scanner, daemon=True).start()
+
+
+    def cleanup(self):
+        self.is_running = False
+        print("Cleaning up resources...")
+        if self.serial_scanner:
+            print("Stopping scanner...")
+            self.serial_scanner.stop()
+        
+        if hasattr(self, 'sync_manager') and self.sync_manager:
+            self.sync_manager.stop_sync_thread = True
 
     def _handle_resize(self, e=None):
         # Check if window was maximized by OS and switch to full screen
@@ -126,7 +139,10 @@ class ProductApp:
             self.scanner_fab.icon = ft.Icons.USB_OFF
             self.scanner_fab.tooltip = "Scanner Desconectado (Clique para reconectar)"
             self.scanner_fab.on_click = lambda e: self.reconnect_scanner() # Restore click
-        self.scanner_fab.update()
+        try:
+             if self.is_running: self.scanner_fab.update()
+        except RuntimeError:
+             pass
 
     def reconnect_scanner(self):
         print("Reconnecting scanner...")
@@ -141,32 +157,80 @@ class ProductApp:
         threading.Thread(target=self.init_serial_scanner, daemon=True).start()
 
     def init_serial_scanner(self):
-        # 1. Get Config
-        local_conn = sqlite_db.Database()
-        port = local_conn.get_config('scanner_port')
-        
-        if not port:
-            # Auto-detect logic
-            port = SerialScanner.find_scanner_port()
+        # Prevent double init
+        if not self.scanner_lock.acquire(blocking=False):
+            print("Scanner init already in progress (locked).")
+            return
+
+        try:
+            if hasattr(self, 'scanner_initializing') and self.scanner_initializing:
+                 print("Scanner init already in progress (flag).")
+                 return
+            
+            self.scanner_initializing = True
+            # 0. Wait for UI to stabilize
+            time.sleep(2.0)
+
+            # 1. Get Config
+            local_conn = sqlite_db.Database()
+            port = local_conn.get_config('scanner_port')
+            
+            if not port:
+                # Auto-detect logic
+                port = SerialScanner.find_scanner_port()
+                if port:
+                    print(f"Auto-detected scanner on {port}", flush=True)
+                else:
+                     print("Scanner not found via auto-detection.", flush=True)
+            
+            # Ensure any previous scanner is stopped
+            if self.serial_scanner: 
+                 try:
+                     self.serial_scanner.stop()
+                 except: pass
+
             if port:
-                print(f"Auto-detected scanner on {port}")
+                try:
+                    self.serial_scanner = SerialScanner(port=port)
+                    self.serial_scanner.set_callback(self.on_barcode_scanned)
+                    self.serial_scanner.set_error_callback(self.on_scanner_error)
+                    started = self.serial_scanner.start()
+                    if not started:
+                        print(f"Failed to start scanner on {port}", flush=True)
+                        try:
+                            self.show_error(f"Erro ao conectar leitor na porta {port}")
+                            if self.is_running:
+                                self.update_scanner_status(False)
+                        except Exception as e:
+                            print(f"Error updating UI during scanner init fail: {e}", flush=True)
+                    else:
+                        print(f"Scanner started on {port}", flush=True) # Redundant but safe
+                        try:
+                            if self.is_running:
+                                self.update_scanner_status(True)
+                        except Exception as e:
+                            print(f"Error updating UI during scanner init success: {e}", flush=True)
+                except Exception as inner_e:
+                     print(f"CRITICAL ERROR starting scanner: {inner_e}", flush=True)
+                     import traceback
+                     traceback.print_exc()
+
             else:
-                 print("Scanner not found via auto-detection.")
-        
-        if port:
-            self.serial_scanner = SerialScanner(port=port)
-            self.serial_scanner.set_callback(self.on_barcode_scanned)
-            self.serial_scanner.set_error_callback(self.on_scanner_error)
-            started = self.serial_scanner.start()
-            if not started:
-                print(f"Failed to start scanner on {port}")
-                self.show_error(f"Erro ao conectar leitor na porta {port}")
-                self.update_scanner_status(False)
-            else:
-                print(f"Scanner started on {port}")
-                self.update_scanner_status(True)
-        else:
-            self.update_scanner_status(False)
+                try:
+                    if self.is_running:
+                        self.update_scanner_status(False)
+                except Exception as e:
+                    pass
+        except Exception as e:
+             print(f"CRITICAL ERROR in init_serial_scanner: {e}", flush=True)
+             import traceback
+             traceback.print_exc()
+        finally:
+            self.scanner_initializing = False
+            try:
+                self.scanner_lock.release()
+            except RuntimeError: pass
+
 
     def on_barcode_scanned(self, barcode):
         # Dispatch to main thread to be safe with UI updates
@@ -181,7 +245,10 @@ class ProductApp:
 
     def on_scanner_error(self, msg):
         print(f"Scanner Error: {msg}") 
-        self.update_scanner_status(False)
+        if self.is_running:
+            try:
+                self.update_scanner_status(False)
+            except RuntimeError: pass
         
         # Auto-reconnect logic
         # Prevent spamming reconnects if one is already scheduled or running?
@@ -201,10 +268,15 @@ class ProductApp:
             self.page.window.full_screen = True
             if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
                 self.ui.update_custom_buttons_visibility()
-            self.page.update()
+            try:
+                if self.is_running: self.page.update()
+            except RuntimeError: pass
+            
             if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
                 self.ui.update_custom_buttons_visibility()
-            self.page.update()
+            try:
+                if self.is_running: self.page.update()
+            except RuntimeError: pass
 
     def show_error(self, message):
         print(f"Showing message: {message}")
@@ -236,7 +308,10 @@ class ProductApp:
 
         self.page.snack_bar = ft.SnackBar(content=ft.Text(message), bgcolor=color, duration=10000)
         self.page.snack_bar.open = True
-        self.page.update()
+        try:
+            if self.is_running: self.page.update()
+        except RuntimeError:
+            pass
 
     def run_sync(self, e):
         """
