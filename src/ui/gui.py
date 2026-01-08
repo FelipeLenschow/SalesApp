@@ -114,7 +114,7 @@ class ProductApp:
             self.serial_scanner.stop()
         
         if hasattr(self, 'sync_manager') and self.sync_manager:
-            self.sync_manager.stop_sync_thread = True
+            self.sync_manager.stop()
 
     def _handle_resize(self, e=None):
         # Check if window was maximized by OS and switch to full screen
