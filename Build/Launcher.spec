@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['c:\\Users\\Felipe\\Desktop\\Sales\\src\\launcher.py'],
+    ['C:\\Users\\Felipe\\Desktop\\Sales\\launcher.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['src.embedded_credentials', 'src.db_sqlite', 'src.aws_db'],
+    hiddenimports=['src.embedded_credentials', 'src.db_sqlite', 'src.aws_db', 'certifi'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -29,7 +29,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
