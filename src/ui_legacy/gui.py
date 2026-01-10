@@ -9,11 +9,13 @@ import uuid
 
 import src.db_sqlite as db
 import src.sale as sale
+from src.serial_scanner import SerialScanner
+from src.sync_core import SyncClient
 
 # Constants for UI scaling
 BASE_WIDTH = 1920
 BASE_HEIGHT = 1080
-Version = "0.5.2-Legacy"
+Version = "2.2.1-Tkinter"
 
 def is_numlock_on():
     if platform.system() != 'Windows':
@@ -47,7 +49,14 @@ class POSApplication:
         self.final_price_label = None
         self.status_label = None
         self.filtered_products = [] 
+        self.status_label = None
+        self.filtered_products = [] 
         self.category_quantities = {}
+        
+        # Scanner & Sync Init
+        self.serial_scanner = None
+        self.scanner_lock = threading.Lock()
+        self.scanner_initializing = False
 
         # Change Calculator Vars
         self.received_var = tk.StringVar()
@@ -55,6 +64,9 @@ class POSApplication:
 
         set_numlock(True)
         self.root.bind_all("<Num_Lock>", lambda event: (set_numlock(state=True), "break")[1])
+        
+        # Init Scanner in bg
+        threading.Thread(target=self.init_serial_scanner, daemon=True).start()
 
         self.screen_width = self.root.winfo_screenwidth()
         self.screen_height = self.root.winfo_screenheight()
@@ -71,7 +83,14 @@ class POSApplication:
 
         # Auto-select default shop
         shops = self.product_db.get_shops()
-        default_shop = shops[0] if shops else "Sorveteria"
+        
+        # Priority: DB Config (from Launcher) -> First in list -> Default
+        selected = self.product_db.get_selected_shop()
+        if selected and selected in shops:
+             default_shop = selected
+        else:
+             default_shop = shops[0] if shops else "Sorveteria"
+             
         self.selected_shop_var.set(default_shop)
         
         self.sale = sale.Sale(self.product_db, default_shop, payment_method="")
@@ -92,11 +111,28 @@ class POSApplication:
         button_font = ("Arial", int(14 * self.scale_factor))
         final_price_font = ("Arial", int(50 * self.scale_factor), "bold")
 
+        # Header Text Frame (Top Left)
+        header_frame = tk.Frame(self.root, bg="#1a1a2e")
+        header_frame.grid(row=0, column=0, columnspan=2, sticky="nw", padx=int(20 * self.scale_factor), pady=int(20 * self.scale_factor))
+
         # Title Label
-        title_label = ttk.Label(self.root, text="Sorveteria Lolla", font=title_font, background="#1a1a2e",
+        title_label = ttk.Label(header_frame, text="Sorveteria Lolla", font=title_font, background="#1a1a2e",
                                 foreground="#ffffff")
-        title_label.grid(row=0, column=0, columnspan=3, pady=int(20 * self.scale_factor),
-                         padx = int(20 * self.scale_factor), sticky="nw")
+        title_label.pack(anchor="w")
+
+        # Selected Shop Label
+        selected_shop_label = ttk.Label(
+            header_frame, text=f"{self.selected_shop_var.get()}", background="#1a1a2e",
+            foreground="#ffffff", font=shop_font
+        )
+        selected_shop_label.pack(anchor="w")
+
+        # Version Tag
+        version_label = tk.Label(
+            header_frame, text=f"v{Version}", font=("Arial", int(12 * self.scale_factor)),
+            bg="#1a1a2e", fg="#555555"
+        )
+        version_label.pack(anchor="w")
 
         # Configure grid
         self.root.grid_columnconfigure(0, weight=1)
@@ -120,16 +156,6 @@ class POSApplication:
             font=("Arial", int(16 * self.scale_factor)), borderwidth=0, width=3
         )
         minimize_button.pack(side=tk.RIGHT)
-
-        # Selected Shop Label
-        selected_shop_label = ttk.Label(
-            self.root, text=f"{self.selected_shop_var.get()}", background="#1a1a2e",
-            foreground="#ffffff", font=shop_font
-        )
-        selected_shop_label.grid(
-            row=0, column=0, columnspan=3, padx=int(20 * self.scale_factor),
-            pady=int(70 * self.scale_factor), sticky="sw"
-        )
 
         # Barcode Entry
         self.barcode_entry = ttk.Combobox(self.root, state="normal", font=entry_font, width=45)
@@ -164,38 +190,18 @@ class POSApplication:
             padx=int(50 * self.scale_factor), sticky="ne"
         )
 
-        # Buttons Right Side
-        
-        #Finalize Sale Button (Main)
-        finalize_sale_button = tk.Button(
-            self.root, text="Finalizar compra", font=button_font,
-            command=lambda: self.finalize_sale(self.sale.id), width=23, height=2,
-            bg="#00aa00", fg="white"
-        )
-
-        finalize_sale_button.grid(
+        # Right Panel Frame for Buttons and Calculator
+        self.right_panel_frame = tk.Frame(self.root, bg="#1a1a2e")
+        self.right_panel_frame.grid(
             row=2, column=2, padx=int(50 * self.scale_factor),
-            pady=int(300 * self.scale_factor), sticky="ne"
+            pady=int(10 * self.scale_factor), sticky="ne"
         )
 
-        # "Nova venda" removed from here as per request
+        # Money Change Calculator (Now at the top of right panel)
+        calc_frame = tk.Frame(self.right_panel_frame, bg="#1a1a2e")
+        calc_frame.pack(pady=(0, 20), fill=tk.X)
 
-        # Add New Product Button
-        add_new_product_button = tk.Button(
-            self.root, text="Cadastrar novo produto", command=self.edit_product,
-            font=button_font, width=23, height=1,
-            bg="#0000aa", fg="white"
-        )
-        add_new_product_button.grid(
-            row=2, column=2, padx=int(50 * self.scale_factor),
-            pady=int(370 * self.scale_factor), sticky="ne"
-        )
-
-         # Money Change Calculator
-        calc_frame = tk.Frame(self.root, bg="#1a1a2e")
-        calc_frame.grid(row=2, column=2, padx=int(50 * self.scale_factor), pady=int(500 * self.scale_factor), sticky="ne")
-
-        tk.Label(calc_frame, text="Calculadora de Troco", font=("Arial", int(14 * self.scale_factor)), bg="#1a1a2e", fg="#aaaaaa").pack(pady=(0,5))
+        tk.Label(calc_frame, text="Calculadora de Troco", font=("Arial", int(14 * self.scale_factor)), bg="#1a1a2e", fg="#aaaaaa").pack(pady=(0,5), anchor="w")
         
         tk.Label(calc_frame, text="Recebido:", font=("Arial", int(12 * self.scale_factor)), bg="#1a1a2e", fg="white").pack(anchor="w")
         entry_received = tk.Entry(calc_frame, textvariable=self.received_var, font=("Arial", int(14 * self.scale_factor)))
@@ -203,9 +209,59 @@ class POSApplication:
         
         tk.Label(calc_frame, text="Troco:", font=("Arial", int(12 * self.scale_factor)), bg="#1a1a2e", fg="white").pack(anchor="w", pady=(5,0))
         self.change_label = tk.Label(calc_frame, text="R$ 0.00", font=("Arial", int(20 * self.scale_factor), "bold"), bg="#1a1a2e", fg="#00ff00")
-        self.change_label.pack()
+        self.change_label.pack(anchor="w")
         
         self.received_var.trace("w", self.calculate_change)
+
+        # Finalize Sale Button
+        finalize_sale_button = tk.Button(
+            self.right_panel_frame, text="Finalizar compra", font=button_font,
+            command=lambda: self.finalize_sale(self.sale.id), height=2,
+            bg="#00aa00", fg="white"
+        )
+        finalize_sale_button.pack(pady=(0, 20), fill=tk.X)
+
+        # FAB Container (Bottom Right)
+        self.fab_frame = tk.Frame(self.root, bg="#1a1a2e")
+        # Use place for absolute positioning to ensure visibility and alignment at bottom-right
+        # Same vertical level as stored_sale_frame roughly
+        self.fab_frame.place(relx=1.0, rely=1.0, anchor="se", x=-20, y=-20)
+
+        # Scanner FAB (Functional)
+        self.scanner_fab = tk.Button(
+            self.fab_frame, text="USB", # Icon fallback
+            command=self.reconnect_scanner,
+            font=("Arial", 12, "bold"), width=4, height=2,
+            bg="#0088cc", fg="white", activebackground="#006699", activeforeground="white"
+        )
+        self.scanner_fab.pack(side=tk.LEFT, padx=5)
+
+        # Register FAB (Moved)
+        self.register_fab = tk.Button(
+            self.fab_frame, text="+", 
+            command=self.edit_product,
+            font=("Arial", 12, "bold"), width=4, height=2,
+            bg="#0088cc", fg="white", activebackground="#006699", activeforeground="white"
+        )
+        self.register_fab.pack(side=tk.LEFT, padx=5)
+
+        # History FAB (Disabled)
+        self.history_fab = tk.Button(
+            self.fab_frame, text="Hist", 
+            command=None,
+            font=("Arial", 12, "bold"), width=4, height=2,
+            bg="#555555", fg="#aaaaaa", state=tk.DISABLED
+        )
+        self.history_fab.pack(side=tk.LEFT, padx=5)
+
+        # Sync FAB
+        self.sync_fab = tk.Button(
+            self.fab_frame, text="Sync", 
+            command=self.run_sync,
+            font=("Arial", 12, "bold"), width=4, height=2,
+            bg="#0088cc", fg="white", activebackground="#006699", activeforeground="white"
+        )
+        self.sync_fab.pack(side=tk.LEFT, padx=5)
 
         self.update_sale_display()
         self.root.grid_rowconfigure(4, weight=1)
@@ -669,6 +725,9 @@ class POSApplication:
 
 
     def delete_stored_sale(self, id):
+        if not messagebox.askyesno("Confirmar remoção", "Tem certeza que deseja apagar esta venda em aberto?"):
+            return
+
         to_rem = next((s for s in self.stored_sales if s.id == id), None)
         if to_rem:
              self.stored_sales.remove(to_rem)
@@ -688,5 +747,154 @@ class POSApplication:
             self.new_sale(s)
 
     def close_application(self):
+        if self.serial_scanner:
+             self.serial_scanner.stop()
         self.root.quit()
         self.root.destroy()
+        
+    def init_serial_scanner(self):
+        # Prevent double init
+        if not self.scanner_lock.acquire(blocking=False):
+            return
+
+        try:
+            if self.scanner_initializing: return
+            self.scanner_initializing = True
+            time.sleep(2.0) # Wait for UI
+
+            # 1. Get Config
+            port = self.product_db.get_config('scanner_port')
+            
+            if not port:
+                port = SerialScanner.find_scanner_port()
+            
+            # Ensure any previous scanner is stopped
+            if self.serial_scanner: 
+                 try: self.serial_scanner.stop()
+                 except: pass
+
+            if port:
+                try:
+                    self.serial_scanner = SerialScanner(port=port)
+                    self.serial_scanner.set_callback(self.on_barcode_scanned)
+                    self.serial_scanner.set_error_callback(self.on_scanner_error)
+                    started = self.serial_scanner.start()
+                    
+                    if started:
+                        self.update_scanner_status(True, port)
+                    else:
+                        self.update_scanner_status(False)
+                except Exception as e:
+                     print(f"Error starting scanner: {e}")
+                     self.update_scanner_status(False)
+            else:
+                 self.update_scanner_status(False)
+                 
+        except Exception as e:
+             print(f"CRITICAL ERROR in init_serial_scanner: {e}")
+        finally:
+            self.scanner_initializing = False
+            self.scanner_lock.release()
+
+    def update_scanner_status(self, connected, port=""):
+         def _update():
+             if hasattr(self, 'scanner_fab'):
+                 if connected:
+                     self.scanner_fab.config(bg="#00aa00", activebackground="#00aa00") # Green
+                 else:
+                     self.scanner_fab.config(bg="#aa0000", activebackground="#aa0000") # Red
+         self.root.after(0, _update)
+
+    def on_barcode_scanned(self, barcode):
+        # Thread-safe callback
+        self.root.after(0, lambda: self.handle_barcode_event(barcode))
+        
+    def handle_barcode_event(self, barcode):
+        # Only inject if we are focused on main window or barcode entry?
+        # Actually scanner acts as keyboard usually, but serial scanner is separate.
+        # So we manually inject into handle_barcode logic.
+        if barcode:
+             self.barcode_entry.set(barcode)
+             self.handle_barcode()
+
+    def on_scanner_error(self, msg):
+        print(f"Scanner Error: {msg}")
+        self.update_scanner_status(False)
+        
+    def reconnect_scanner(self):
+        print("Reconnecting scanner...")
+        if self.serial_scanner:
+            self.serial_scanner.stop()
+        
+        # Set to grey/loading
+        if hasattr(self, 'scanner_fab'):
+             self.scanner_fab.config(bg="#888888")
+             
+        threading.Thread(target=self.init_serial_scanner, daemon=True).start()
+
+    def run_sync(self):
+        print("Running manual sync...")
+        self.sync_fab.config(bg="#aaaa00", text="...") # Yellowish
+        self.show_toast("Sincronizando...", bg="#aaaa00")
+        
+        def _sync_thread():
+             try:
+                 client = SyncClient(self.product_db)
+                 shop_name = self.selected_shop_var.get()
+                 result = client.sync(shop_name=shop_name)
+                 
+                 msg = f"Sincronização concluída!\nMsg: {result.get('message')}"
+                 is_success = result.get('success', True)
+                 
+                 def _finish():
+                     if is_success:
+                         self.sync_fab.config(bg="#00aa00", text="Sync")
+                         self.show_toast(msg, bg="#00aa00")
+                         # messagebox.showinfo("Sucesso", msg) # Removed
+                     else:
+                         self.sync_fab.config(bg="#aa0000", text="Erro")
+                         self.show_toast(msg, bg="#aa0000")
+                         # messagebox.showerror("Erro", msg) # Removed
+                         
+                 self.root.after(0, _finish)
+                 
+             except Exception as e:
+                 def _fail():
+                     self.sync_fab.config(bg="#aa0000", text="Erro")
+                     self.show_toast(f"Erro Crítico: {str(e)}", bg="#aa0000")
+                 self.root.after(0, _fail)
+
+        threading.Thread(target=_sync_thread, daemon=True).start()
+
+    def show_toast(self, message, duration=4000, bg="#333333", fg="white"):
+        """
+        Displays a non-blocking toast message at the bottom of the screen.
+        """
+        toast = tk.Toplevel(self.root)
+        toast.overrideredirect(True) # Remove window decorations
+        toast.attributes("-topmost", True)
+        toast.config(bg=bg)
+        
+        lbl = tk.Label(toast, text=message, bg=bg, fg=fg, font=("Arial", 12), padx=20, pady=10)
+        lbl.pack()
+        
+        # Center horizontally at the bottom
+        toast.update_idletasks()
+        width = toast.winfo_width()
+        height = toast.winfo_height()
+        
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        
+        x = (screen_width // 2) - (width // 2)
+        y = screen_height - height - 80 # Just above the taskbar/bottom edge
+        
+        toast.geometry(f"+{x}+{y}")
+        
+        # Fade out/destroy effect
+        def close_toast():
+            try:
+                toast.destroy()
+            except: pass
+            
+        self.root.after(duration, close_toast)
