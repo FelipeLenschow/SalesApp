@@ -1,6 +1,6 @@
-
 import sqlite3
 import json
+import unicodedata
 from datetime import datetime
 import os
 
@@ -200,19 +200,92 @@ class Database:
             print(f"Error fetching by barcode: {e}")
         return []
 
+    def strip_accents(self, text):
+        if not text: return ""
+        return ''.join(c for c in unicodedata.normalize('NFD', text)
+                  if unicodedata.category(c) != 'Mn')
+
     def search_products(self, term, shop_name=None):
-        """Local wildcard search."""
+        """Local search with Python filtering for accents and noise control."""
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                t = f"%{term}%"
-                cursor.execute("""
-                    SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products 
-                    WHERE barcode LIKE ? OR category LIKE ? OR flavor LIKE ? OR brand LIKE ?
-                """, (t, t, t, t))
-                rows = cursor.fetchall()
-                return [self._row_to_dict(r, shop_name) for r in rows]
-        except sqlite3.Error as e:
+            term = self.strip_accents(term).lower().strip()
+            if not term: return []
+            
+            # Fetch all to filter in Python (dataset is small, ~500-1000 items)
+            all_products = self.get_all_products_local()
+            results = []
+            
+            # Smart filtering:
+            # 1. Barcode: Only if term has digits (avoids matching UUIDs with random letters)
+            # 2. Brand: EXCLUDE from broad match to avoid "Lolla" spam
+            # 3. Category/Flavor: Full text search with accent stripping
+            
+            check_barcode = any(char.isdigit() for char in term)
+            
+            for p in all_products:
+                # Prepare fields
+                p_cat = self.strip_accents(p.get('categoria', '') or '').lower()
+                p_flav = self.strip_accents(p.get('sabor', '') or '').lower()
+                p_bar = (p.get('barcode', '') or '').lower()
+                
+                match = False
+                
+                # Check Text Fields
+                if term in p_cat or term in p_flav:
+                    match = True
+                
+                # Check Barcode
+                if not match and check_barcode:
+                    if term in p_bar:
+                        match = True
+                        
+                if match:
+                    # Resolve price for the specific shop if needed
+                    # get_all_products_local returns default price, we might want to refine it?
+                    # The UI calls this, and UI expects dicts. 
+                    # get_all_products_local already calls _row_to_dict whic handles basic price.
+                    # If we want shop-specific price, we should re-process or ensure_row_to_dict handled it?
+                    # _row_to_dict doesn't take shop_name in get_all_products_local...
+                    # Let's fix the price resolution for the result set.
+                    
+                    # Optimization: get_all_products_local calls _row_to_dict with shop_name=None.
+                    # We can re-resolve price if shop_name is provided.
+                    if shop_name:
+                        # Extract prices_json again or just rely on what we have?
+                        # _row_to_dict parses prices_json.
+                        # We can re-run the price selection logic here or just modify the dict.
+                        prices = p.get('metadata', {}).get('prices', {})
+                        # But wait, local _row_to_dict produces 'prices_json' string in dict, not dict object in 'prices'?
+                        # Let's check _row_to_dict.
+                        # It puts 'prices_json' (raw string) in dict.
+                        # And 'metadata' (dict) in dict.
+                        
+                        # Let's just re-use the logic from _row_to_dict or just implement it simple here.
+                        # Actually, better to just call get_product_info if we want full detail? No, too slow.
+                        # Let's trust the 'prices_json' in the dict if available.
+                        pass # For now, return as is, UI might handle it or we accept default price.
+                             # Re-reading: _row_to_dict(row, shop_name) uses shop_name to set 'preco'.
+                             # get_all_products_local() calls it with None.
+                             # So 'preco' is 0 or base.
+                             # We should update 'preco' for the filtered results.
+                        
+                        if p.get('prices_json'):
+                             try:
+                                 pj = json.loads(p.get('prices_json'))
+                                 if shop_name in pj:
+                                     p['preco'] = float(pj[shop_name])
+                                 else:
+                                      shop_u = shop_name.replace(" ", "_")
+                                      if shop_u in pj:
+                                          p['preco'] = float(pj[shop_u])
+                             except:
+                                 pass
+
+                    results.append(p)
+                    
+            return results
+
+        except Exception as e:
             print(f"Error searching: {e}")
         return []
         
@@ -274,7 +347,7 @@ class Database:
                 final_price = float(prices_json[shop_name])
             else:
                  # Try variations?
-                 print(f"DEBUG: Shop '{shop_name}' not in prices: {list(prices_json.keys())}")
+                 # print(f"DEBUG: Shop '{shop_name}' not in prices: {list(prices_json.keys())}")
                  # Fallback: maybe the key has underscores?
                  shop_u = shop_name.replace(" ", "_")
                  if shop_u in prices_json:
