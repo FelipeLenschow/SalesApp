@@ -138,10 +138,32 @@ class Database:
             print(f"Error fetching shops: {e}")
             return []
 
-    def add_shop(self, shop_name):
+    def get_shop_info(self, shop_name):
         try:
-            self.public_shops_table.put_item(Item={'name': shop_name})
+            resp = self.public_shops_table.get_item(Key={'name': shop_name})
+            item = resp.get('Item', {})
+            return {
+                'name': item.get('name', shop_name),
+                'address': item.get('address', ''),
+                'phone': item.get('phone', ''),
+                'cnpj': item.get('cnpj', ''),
+                'message': item.get('message', '')
+            }
+        except ClientError as e:
+            print(f"Error getting shop info: {e}")
+            return {'name': shop_name}
+
+    def add_shop(self, shop_name, address='', phone='', cnpj='', message=''):
+        try:
+            self.public_shops_table.put_item(Item={
+                'name': shop_name,
+                'address': address,
+                'phone': phone,
+                'cnpj': cnpj,
+                'message': message
+            })
             return True
+
         except ClientError as e:
             print(f"Error adding shop: {e}")
             raise e

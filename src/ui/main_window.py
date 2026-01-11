@@ -94,7 +94,20 @@ class MainWindow:
             disabled=True,
         )
 
+        self.app.print_btn = ft.ElevatedButton(
+            "Imprimir",
+            width=200 * 0.6,
+            height=button_heigth,
+            on_click=lambda e: self.app.print_receipt_handler(e),
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.ORANGE_700,
+                color=ft.Colors.WHITE,
+                 text_style=ft.TextStyle(size=18, weight=ft.FontWeight.BOLD)
+            ),
+        )
+
         finalize_btn = ft.ElevatedButton(
+
             "Finalizar",
             height=button_heigth,
             width=120,
@@ -113,7 +126,9 @@ class MainWindow:
                     ft.Container(height=60),
                     ft.Row([self.app.payment_method_var], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([self.app.cobrar_btn], alignment=ft.MainAxisAlignment.CENTER),
+                    ft.Row([self.app.print_btn], alignment=ft.MainAxisAlignment.CENTER),
                 ],
+
                 spacing=6,
                 alignment=ft.MainAxisAlignment.CENTER,
             ),
@@ -354,9 +369,18 @@ class MainWindow:
             tooltip="Status Scanner (Clique para reconectar)",
         )
 
+        self.app.printer_fab = ft.FloatingActionButton(
+            icon=ft.Icons.PRINT,
+            bgcolor=ft.Colors.GREY,
+            on_click=lambda e: self.app.connect_printer(),
+            tooltip="Status Impressora",
+        )
+
         self.page.floating_action_button = ft.Row(
             controls=[
+                self.app.printer_fab,
                 self.app.scanner_fab,
+
                 self.app.register_fab,
                 self.app.history_fab,
                 self.app.sync_fab

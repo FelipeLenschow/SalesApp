@@ -439,6 +439,22 @@ class Database:
     def set_last_sync_timestamp(self, ts):
         self.set_config('last_sync_timestamp', ts)
 
+    def set_shop_details(self, details):
+        """Stores shop specific print info."""
+        self.set_config('shop_address', details.get('address', ''))
+        self.set_config('shop_phone', details.get('phone', ''))
+        self.set_config('shop_cnpj', details.get('cnpj', ''))
+        self.set_config('shop_message', details.get('message', ''))
+
+    def get_shop_details(self):
+        return {
+            'address': self.get_config('shop_address') or '',
+            'phone': self.get_config('shop_phone') or '',
+            'cnpj': self.get_config('shop_cnpj') or '',
+            'message': self.get_config('shop_message') or ''
+        }
+
+
     def get_shops(self):
         try:
             val = self.get_config('cached_shops')

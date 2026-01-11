@@ -3,6 +3,8 @@ import flet as ft
 import threading
 import time
 from src.sync_core import SyncClient
+from src.aws_db import Database as AWSDatabase
+
 
 class SyncManager:
     def __init__(self, app):
@@ -69,8 +71,21 @@ class SyncManager:
                 # No URL needed
                 client = SyncClient(self.app.product_db)
                 shop_name = getattr(self.app, 'shop', None)
+                
+                # Fetch detailed shop info
+                if shop_name:
+                    try:
+                        aws_db = AWSDatabase()
+                        shop_info = aws_db.get_shop_info(shop_name)
+                        if shop_info:
+                             print(f"Syncing shop details for {shop_name}: {shop_info}")
+                             self.app.product_db.set_shop_details(shop_info)
+                    except Exception as e:
+                         print(f"Failed to sync shop details: {e}")
+
                 result = client.sync(shop_name=shop_name)
                 print(f"Sync result: {result}")
+
                 
                 if not silent:
                     loading.open = False

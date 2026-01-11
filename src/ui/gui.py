@@ -14,6 +14,7 @@ import src.sale as sale
 import src.payment as payment
 import src.ui.sync_client as sync_client
 from src.serial_scanner import SerialScanner
+from src.printer import Printer
 
 import src.db_sqlite as sqlite_db
 
@@ -59,6 +60,12 @@ class ProductApp:
         # Keyboard event handling
         self.page.on_resized = self._handle_resize
         self.page.on_window_event = self.on_window_event
+        
+        
+        # Printer Init
+        self.printer_port = None # Will be set by connect_printer
+
+
 
         # Initialize UI
 
@@ -104,6 +111,10 @@ class ProductApp:
 
         # Init scanner in background AFTER UI is built to avoid race conditions
         threading.Thread(target=self.init_serial_scanner, daemon=True).start()
+        
+        # Init printer in background
+        threading.Thread(target=self.connect_printer, daemon=True).start()
+
 
 
     def cleanup(self):
@@ -144,6 +155,57 @@ class ProductApp:
         except RuntimeError:
              pass
 
+    def connect_printer(self):
+        print("Connecting printer...")
+        if hasattr(self, 'printer_fab'):
+             self.printer_fab.bgcolor = ft.Colors.ORANGE
+             self.printer_fab.update()
+
+        def _check():
+            port = self.printer_port
+            
+            # Auto-detect if not set or if we want to force re-detect?
+            # Let's try to Auto-detect always on connect request
+            detected_port = Printer.find_printer_port()
+            if detected_port:
+                port = detected_port
+                self.printer_port = port # Update global
+
+            if not port:
+                 print("Printer not found via auto-detection.")
+                 # Fallback to COM11 or just fail?
+                 # If user manually set it in config (future feature), we should use that.
+                 # For now, if auto-detect fails, maybe try COM11 as last resort?
+                 print("Falling back to COM11.")
+                 port = "COM11"
+
+            printer = Printer(port=port)
+            connected = printer.check_connection()
+            
+            # Update FAB
+            if hasattr(self, 'printer_fab'):
+                if connected:
+                    self.printer_port = port # Confirm this is the working port
+                    self.printer_fab.bgcolor = ft.Colors.GREEN
+                    self.printer_fab.icon = ft.Icons.PRINT
+                    self.printer_fab.tooltip = f"Impressora Conectada ({port})"
+                else:
+                    self.printer_fab.bgcolor = ft.Colors.RED
+                    self.printer_fab.icon = ft.Icons.PRINT_DISABLED
+                    self.printer_fab.tooltip = "Impressora Desconectada (Clique para reconectar)"
+                try:
+                    self.printer_fab.update()
+                except: pass
+            
+            if connected:
+                 print(f"Printer connected on {port}")
+            else:
+                 print(f"Printer connection failed on {port}")
+
+        threading.Thread(target=_check, daemon=True).start()
+
+
+
     def reconnect_scanner(self):
         print("Reconnecting scanner...")
         if self.serial_scanner:
@@ -182,6 +244,16 @@ class ProductApp:
                     print(f"Auto-detected scanner on {port}", flush=True)
                 else:
                      print("Scanner not found via auto-detection.", flush=True)
+            
+            # CONFLICT FIX: Prevent Scanner from using Printer Port
+            current_printer_port = self.printer_port
+            if not current_printer_port:
+                 current_printer_port = Printer.find_printer_port()
+            
+            if port and current_printer_port and port.upper() == current_printer_port.upper():
+                print(f"Detected scanner on {port} but this is the PRINTER port ({current_printer_port}). Ignoring.", flush=True)
+                port = None
+
             
             # Ensure any previous scanner is stopped
             if self.serial_scanner: 
@@ -322,6 +394,33 @@ class ProductApp:
     def mark_unsynced(self):
         self.sync_manager.mark_unsynced()
 
+    def print_receipt_handler(self, e):
+        if not self.sale or not self.sale.current_sale:
+            self.show_error("Nenhuma venda para imprimir.")
+            return
+
+        def _print_task():
+            try:
+                # FIX: Pass the detected port
+                port_to_use = self.printer_port or "COM11"
+                printer = Printer(port=port_to_use)
+                
+                # Fetch shop details
+                shop_details = self.product_db.get_shop_details()
+                
+                success = printer.print_receipt(self.sale, self.shop, shop_details=shop_details)
+
+
+                if success:
+                    self.show_error("Enviado para impressora!")
+                else:
+                    self.show_error("Erro ao imprimir. Verifique a impressora.")
+            except Exception as ex:
+                print(f"Print error: {ex}")
+                self.show_error(f"Erro: {ex}")
+
+        threading.Thread(target=_print_task, daemon=True).start()
+
     def select_product(self, product):
         self.ui.hide_dropdown()
         self.sale.add_product(product)
@@ -434,6 +533,7 @@ class ProductApp:
                 
                 # Clear value only after successful manual add
                 self.barcode_entry.value = ""
+                self.ui.hide_dropdown()
                 self.page.update()
                 return
             except ValueError:
