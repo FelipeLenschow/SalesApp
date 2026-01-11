@@ -7,3 +7,4 @@ dist/
 build/temp_launcher
 build/temp_app
 build/temp
+Build/*.spec

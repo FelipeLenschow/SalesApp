@@ -125,7 +125,7 @@ def build_launcher(project_root, arch_suffix):
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--console",
+        "--noconsole",
         "--onefile",
         "--name", "Launcher",
         "--distpath", os.path.join(project_root, 'dist', f'launcher{arch_suffix}'),
