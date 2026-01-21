@@ -201,6 +201,7 @@ class MainWindow:
             width=480,
             height=240,
             shadow=ft.BoxShadow(blur_radius=12, color=ft.Colors.BLACK54),
+            on_hover=lambda e: self.on_dropdown_hover(e) 
         )
 
         # 7. Barcode Entry
@@ -366,8 +367,7 @@ class MainWindow:
         self.page.floating_action_button = ft.Row(
             controls=[
                 self.app.printer_fab,
-                self.app.scanner_fab,
-
+                self.app.scanner_fab,                
                 self.app.register_fab,
                 self.app.history_fab,
                 self.app.sync_fab
@@ -379,6 +379,9 @@ class MainWindow:
         self.page.add(main_content)
 
     # --- UI Helper Methods (Moved from ProductApp) ---
+
+    def on_dropdown_hover(self, e):
+        self.app.is_mouse_over_dropdown = (e.data == "true")
 
     def show_dropdown(self):
         # We access controls via app because we assigned them to app
@@ -398,13 +401,22 @@ class MainWindow:
 
     def hide_dropdown_in_100ms(self):
         def hide():
-            time.sleep(0.1)
+            time.sleep(0.15) # Wait slightly longer
+            
+            # If mouse is over dropdown, DO NOT hide
+            if self.app.is_mouse_over_dropdown:
+                return
+
             # Check if a scan happened recently (within 500ms)
             if time.time() - self.app.last_barcode_scan < 0.5:
+                # Also focus back? 
+                # Ideally if we scanned, we stay focused or event handles it
                 return
             
             self.app.barcode_dropdown.visible = False
             self.app.barcode_stack.height = 66
-            self.page.update()
+            try:
+                self.page.update()
+            except RuntimeError: pass
 
         threading.Thread(target=hide).start()

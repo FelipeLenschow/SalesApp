@@ -33,7 +33,6 @@ class ProductApp:
         self.sale = None
         self.pay = None
         self.stored_sales = []
-        self.last_sale_data = None # Store last finalized sale for NFC-e
         self.fiscal_manager = FiscalManager()
 
         # Dictionary to keep track of widgets for each product
@@ -45,7 +44,9 @@ class ProductApp:
         self.is_editing = False # Flag to track if edit dialog is open
         self.active_input = None # Track currently focused input field
         self.last_barcode_scan = 0 # Timestamp of last barcode scan to prevent instant closing
-        
+        self.search_selection_index = -1 # Index for keyboard navigation in search results
+        self.first_visible_search_index = 0 # Track the top visible item index
+        self.is_mouse_over_dropdown = False # Track if mouse is over dropdown
         
         # Initialize Cloud DB for price suggestions
         try:
@@ -63,6 +64,10 @@ class ProductApp:
         # Keyboard event handling
         self.page.on_resized = self._handle_resize
         self.page.on_window_event = self.on_window_event
+        self.page.on_keyboard_event = self.on_keyboard_event
+        
+        self.last_enter_time = 0
+        self.enter_count = 0
         
         
         # Printer Init
@@ -153,62 +158,74 @@ class ProductApp:
         else:
             self.scanner_fab.bgcolor = ft.Colors.RED
             self.scanner_fab.icon = ft.Icons.USB_OFF
-            self.scanner_fab.tooltip = "Scanner Desconectado (Clique para reconectar)"
+            self.scanner_fab.tooltip = f"Scanner Desconectado (Clique para reconectar)"
             self.scanner_fab.on_click = lambda e: self.reconnect_scanner() # Restore click
         try:
-             if self.is_running: self.scanner_fab.update()
-        except RuntimeError:
+             if getattr(self, 'is_running', True): 
+                 self.scanner_fab.update()
+        except Exception:
+             # Prevent logging errors during shutdown
              pass
 
     def connect_printer(self):
         print("Connecting printer...")
         if hasattr(self, 'printer_fab'):
              self.printer_fab.bgcolor = ft.Colors.ORANGE
-             self.printer_fab.update()
+             try:
+                self.printer_fab.update()
+             except Exception: pass
 
         def _check():
-            port = self.printer_port
-            
-            # Auto-detect if not set or if we want to force re-detect?
-            # Let's try to Auto-detect always on connect request
-            detected_port = Printer.find_printer_port()
-            if detected_port:
-                port = detected_port
-                self.printer_port = port # Update global
+            try:
+                if not getattr(self, 'is_running', True): return
 
-            if not port:
-                 print("Printer not found via auto-detection.")
-                 # Fallback to COM11 or just fail?
-                 # If user manually set it in config (future feature), we should use that.
-                 # For now, if auto-detect fails, maybe try COM11 as last resort?
-                 print("Falling back to COM11.")
-                 port = "COM11"
+                port = self.printer_port
+                
+                # Auto-detect if not set or if we want to force re-detect?
+                # Let's try to Auto-detect always on connect request
+                detected_port = Printer.find_printer_port()
+                if detected_port:
+                    port = detected_port
+                    self.printer_port = port # Update global
 
-            printer = Printer(port=port)
-            connected = printer.check_connection()
-            
-            # Update FAB
-            if hasattr(self, 'printer_fab'):
+                if not port:
+                     print("Printer not found via auto-detection.")
+                     # Fallback to COM11 or just fail?
+                     # If user manually set it in config (future feature), we should use that.
+                     # For now, if auto-detect fails, maybe try COM11 as last resort?
+                     print("Falling back to COM11.")
+                     port = "COM11"
+
+                printer = Printer(port=port)
+                connected = printer.check_connection()
+                
+                if not getattr(self, 'is_running', True): return
+
+                # Update FAB
+                if hasattr(self, 'printer_fab'):
+                    if connected:
+                        self.printer_port = port # Confirm this is the working port
+                        self.printer_fab.bgcolor = ft.Colors.GREEN
+                        self.printer_fab.icon = ft.Icons.PRINT
+                        self.printer_fab.tooltip = f"Impressora Conectada ({port})"
+                    else:
+                        self.printer_fab.bgcolor = ft.Colors.RED
+                        self.printer_fab.icon = ft.Icons.PRINT_DISABLED
+                        self.printer_fab.tooltip = "Impressora Desconectada (Clique para reconectar)"
+                    try:
+                        self.printer_fab.update()
+                    except Exception: pass
+                
                 if connected:
-                    self.printer_port = port # Confirm this is the working port
-                    self.printer_fab.bgcolor = ft.Colors.GREEN
-                    self.printer_fab.icon = ft.Icons.PRINT
-                    self.printer_fab.tooltip = f"Impressora Conectada ({port})"
+                     print(f"Printer connected on {port}")
                 else:
-                    self.printer_fab.bgcolor = ft.Colors.RED
-                    self.printer_fab.icon = ft.Icons.PRINT_DISABLED
-                    self.printer_fab.tooltip = "Impressora Desconectada (Clique para reconectar)"
-                try:
-                    self.printer_fab.update()
-                except: pass
-            
-            if connected:
-                 print(f"Printer connected on {port}")
-            else:
-                 print(f"Printer connection failed on {port}")
+                     print(f"Printer connection failed on {port}")
+
+            except Exception as e:
+                # Suppress output during shutdown?
+                pass
 
         threading.Thread(target=_check, daemon=True).start()
-
 
 
     def reconnect_scanner(self):
@@ -219,7 +236,9 @@ class ProductApp:
         # Reset visual state to loading/grey maybe?
         if hasattr(self, 'scanner_fab'):
             self.scanner_fab.bgcolor = ft.Colors.ORANGE
-            self.scanner_fab.update()
+            try:
+                self.scanner_fab.update()
+            except Exception: pass
             
         threading.Thread(target=self.init_serial_scanner, daemon=True).start()
 
@@ -237,6 +256,8 @@ class ProductApp:
             self.scanner_initializing = True
             # 0. Wait for UI to stabilize
             time.sleep(2.0)
+            
+            if not getattr(self, 'is_running', True): return
 
             # 1. Get Config
             local_conn = sqlite_db.Database()
@@ -275,33 +296,28 @@ class ProductApp:
                     if not started:
                         print(f"Failed to start scanner on {port}", flush=True)
                         try:
-                            self.show_error(f"Erro ao conectar leitor na porta {port}")
+                            # Verify if still running before showing error
                             if self.is_running:
+                                self.show_error(f"Erro ao conectar leitor na porta {port}")
                                 self.update_scanner_status(False)
-                        except Exception as e:
-                            print(f"Error updating UI during scanner init fail: {e}", flush=True)
+                        except Exception:
+                            pass
                     else:
                         print(f"Scanner started on {port}", flush=True) # Redundant but safe
                         try:
                             if self.is_running:
                                 self.update_scanner_status(True)
-                        except Exception as e:
-                            print(f"Error updating UI during scanner init success: {e}", flush=True)
+                        except Exception:
+                            pass
                 except Exception as inner_e:
-                     print(f"CRITICAL ERROR starting scanner: {inner_e}", flush=True)
-                     import traceback
-                     traceback.print_exc()
+                     # Suppress full traceback on startup error to avoid confusion if it's just a port issue
+                     print(f"Scanner startup info: {inner_e}", flush=True)
 
             else:
-                try:
-                    if self.is_running:
-                        self.update_scanner_status(False)
-                except Exception as e:
-                    pass
-        except Exception as e:
-             print(f"CRITICAL ERROR in init_serial_scanner: {e}", flush=True)
-             import traceback
-             traceback.print_exc()
+                # Port not found or conflict logic used
+                pass
+        except Exception:
+             pass
         finally:
             self.scanner_initializing = False
             try:
@@ -322,10 +338,10 @@ class ProductApp:
 
     def on_scanner_error(self, msg):
         print(f"Scanner Error: {msg}") 
-        if self.is_running:
+        if getattr(self, 'is_running', True):
             try:
                 self.update_scanner_status(False)
-            except RuntimeError: pass
+            except Exception: pass
         
         # Auto-reconnect logic
         # Prevent spamming reconnects if one is already scheduled or running?
@@ -371,14 +387,73 @@ class ProductApp:
             if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
                 self.ui.update_custom_buttons_visibility()
             try:
-                if self.is_running: self.page.update()
-            except RuntimeError: pass
+                if getattr(self, 'is_running', True): self.page.update()
+            except Exception: pass
             
-            if hasattr(self, 'ui') and hasattr(self.ui, 'update_custom_buttons_visibility'):
-                self.ui.update_custom_buttons_visibility()
-            try:
-                if self.is_running: self.page.update()
-            except RuntimeError: pass
+    def on_keyboard_event(self, e: ft.KeyboardEvent):
+        # Handle Search Navigation
+        if self.barcode_dropdown.visible and self.search_results.controls:
+             if e.key == "Arrow Down":
+                 self.search_selection_index += 1
+                 if self.search_selection_index >= len(self.search_results.controls):
+                     self.search_selection_index = 0
+                 self.highlight_search_result(self.search_selection_index)
+                 return 
+
+             elif e.key == "Arrow Up":
+                 self.search_selection_index -= 1
+                 if self.search_selection_index < 0:
+                     self.search_selection_index = len(self.search_results.controls) - 1
+                 self.highlight_search_result(self.search_selection_index)
+                 return
+
+             elif e.key == "Enter":
+                 if self.search_selection_index >= 0 and self.search_selection_index < len(self.search_results.controls):
+                     if hasattr(self, 'filtered_products') and self.filtered_products:
+                          try:
+                               product = self.filtered_products[self.search_selection_index]
+                               self.select_product(product)
+                               return
+                          except IndexError:
+                               pass
+
+        if e.key == "Enter":
+            current_time = time.time()
+            if current_time - self.last_enter_time < 0.5:
+                self.enter_count += 1
+            else:
+                self.enter_count = 1
+            
+            self.last_enter_time = current_time
+
+            # Double Enter (Optional feedback) or Triple Enter (Finalize)
+            if self.enter_count >= 3:
+                if self.sale and self.sale.current_sale:
+                    self.show_snack("Finalizando venda (Enter x3)...", ft.Colors.BLUE)
+                    self.finalize_sale(self.sale.id)
+                    self.enter_count = 0 # Reset
+                else:
+                    self.enter_count = 0
+
+            # Single Enter - Focus Barcode
+            # Only if we are not in a dialog (is_editing check helps, usually)
+            # And ideally not if user is typing in another field?
+            # User request: "Pressing enter, makes the app focus on barcode entry"
+            # We should probably respect that unless a dialog is open.
+            if not self.is_editing and not self.page.overlay and self.enter_count == 1:
+                # But wait, if they pressed Enter to submit a manual quantity, this might steal focus back?
+                # Flet's on_submit usually fires before keyboard event?
+                # Let's try to focus barcode entry if it exists
+                if hasattr(self, 'barcode_entry') and self.barcode_entry:
+                    self.barcode_entry.focus()
+                    self.barcode_entry.update()
+
+    def show_snack(self, message, color=ft.Colors.GREEN):
+        self.page.snack_bar = ft.SnackBar(ft.Text(str(message)), bgcolor=color)
+        self.page.snack_bar.open = True
+        try:
+             self.page.update()
+        except Exception: pass
 
     def show_error(self, message):
         print(f"Showing message: {message}")
@@ -393,14 +468,18 @@ class ProductApp:
                 
                 self.status_text.value = short_msg
                 self.status_text.color = color
-                self.status_text.update()
+                try:
+                    self.status_text.update()
+                except Exception: pass
 
                 def clear_status():
                     time.sleep(10)
                     try:
                         if self.status_text.value == short_msg:
                             self.status_text.value = ""
-                            self.status_text.update()
+                            try:
+                                self.status_text.update()
+                            except Exception: pass
                     except:
                         pass
                 threading.Thread(target=clear_status, daemon=True).start()
@@ -411,8 +490,8 @@ class ProductApp:
         self.page.snack_bar = ft.SnackBar(content=ft.Text(message), bgcolor=color, duration=10000)
         self.page.snack_bar.open = True
         try:
-            if self.is_running: self.page.update()
-        except RuntimeError:
+            if getattr(self, 'is_running', True): self.page.update()
+        except Exception:
             pass
 
     def run_sync(self, e):
@@ -435,6 +514,8 @@ class ProductApp:
     def search_products(self, e=None, search_term=None):
         # Clear previous results
         self.search_results.controls.clear()
+        self.search_selection_index = -1
+        self.first_visible_search_index = 0
 
         if search_term:
             # Normalize search term
@@ -449,9 +530,10 @@ class ProductApp:
             self.filtered_products = filtered
 
             # Populate dropdown with ListTiles
-            for product in filtered:
+            for i, product in enumerate(filtered):
                 self.search_results.controls.append(
                     ft.ListTile(
+                        key=f"search_item_{i}",
                         leading=ft.Icon(ft.Icons.SEARCH),
                         title=ft.Text(
                             f"{product['categoria']} "
@@ -472,6 +554,42 @@ class ProductApp:
             self.ui.hide_dropdown()
 
         self.page.update()
+
+    def highlight_search_result(self, index):
+        for i, control in enumerate(self.search_results.controls):
+            if isinstance(control, ft.ListTile):
+                if i == index:
+                    control.bgcolor = ft.Colors.BLUE_100
+                else:
+                    control.bgcolor = None
+        self.search_results.update()
+
+        # Smart Scrolling Logic
+        VISIBLE_ITEMS = 3 # Estimated visible items (~3.5 lines)
+        
+        should_scroll = False
+        target_scroll_index = self.first_visible_search_index
+
+        if index < self.first_visible_search_index:
+            # Scroll Up
+            self.first_visible_search_index = index
+            target_scroll_index = index
+            should_scroll = True
+            
+        elif index >= self.first_visible_search_index + VISIBLE_ITEMS:
+            # Scroll Down
+            # We want 'index' to be the last visible item, so top visible should be index - (N-1)
+            self.first_visible_search_index = index - VISIBLE_ITEMS + 1
+            target_scroll_index = self.first_visible_search_index
+            should_scroll = True
+            
+        if should_scroll:
+            try:
+                # Scroll the 'first visible' item to the top
+                self.search_results.scroll_to(key=f"search_item_{target_scroll_index}", duration=100)
+            except Exception as e:
+                print(f"Scroll Error: {e}")
+
 
     def handle_search(self):
         barcode = self.barcode_entry.value.strip()  # Use single variable
@@ -1199,6 +1317,17 @@ class ProductApp:
             self.delete_stored_sale(internal_id)
             self.update_sale_display()
             print(f"DEBUG: Finished UI cleanup for sale {internal_id}")
+
+            # Check if any open sale is empty (zerada)
+            has_empty_sale = False
+            for s in self.stored_sales:
+                if not s.current_sale:  # Check if dictionary is empty
+                    has_empty_sale = True
+                    break
+            
+            if not has_empty_sale:
+                print("Finalize: No empty sale found. Creating new one.")
+                self.new_sale(save_current=True)
         except Exception as e:
             print(f"ERROR in finalize_sale UI cleanup: {e}")
             import traceback
