@@ -94,20 +94,7 @@ class MainWindow:
             disabled=True,
         )
 
-        self.app.print_btn = ft.ElevatedButton(
-            "Imprimir",
-            width=200 * 0.6,
-            height=button_heigth,
-            on_click=lambda e: self.app.print_receipt_handler(e),
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.ORANGE_700,
-                color=ft.Colors.WHITE,
-                 text_style=ft.TextStyle(size=18, weight=ft.FontWeight.BOLD)
-            ),
-        )
-
         finalize_btn = ft.ElevatedButton(
-
             "Finalizar",
             height=button_heigth,
             width=120,
@@ -123,10 +110,9 @@ class MainWindow:
                     ft.Row([self.app.valor_pago_entry], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([self.app.troco_text], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([finalize_btn], alignment=ft.MainAxisAlignment.CENTER),
-                    ft.Container(height=60),
+                    ft.Container(height=90),
                     ft.Row([self.app.payment_method_var], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([self.app.cobrar_btn], alignment=ft.MainAxisAlignment.CENTER),
-                    ft.Row([self.app.print_btn], alignment=ft.MainAxisAlignment.CENTER),
                 ],
 
                 spacing=6,
@@ -371,6 +357,7 @@ class MainWindow:
 
         self.app.printer_fab = ft.FloatingActionButton(
             icon=ft.Icons.PRINT,
+            # disabled=True,
             bgcolor=ft.Colors.GREY,
             on_click=lambda e: self.app.connect_printer(),
             tooltip="Status Impressora",

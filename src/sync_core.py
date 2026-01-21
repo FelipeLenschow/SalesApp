@@ -51,18 +51,27 @@ class SyncClient:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT timestamp, final_price, payment_method, products_json, sync_status FROM sales WHERE sync_status IS NOT 'synced'")
+                cursor.execute("SELECT timestamp, final_price, payment_method, products_json, sync_status, fiscal_key, fiscal_xml, fiscal_url_qrcode FROM sales WHERE sync_status IS NOT 'synced'")
                 rows = cursor.fetchall()
                 
                 for row in rows:
                     if not row[3]: continue
-                    sales_data.append({
+                    
+                    sale_obj = {
                         'timestamp': row[0],
                         'final_price': row[1],
                         'payment_method': row[2],
                         'products_json': row[3],
                         'sync_status': row[4]
-                        })
+                    }
+                    
+                    # Add fiscal fields if they exist (Handle schema version compatibility)
+                    if len(row) > 5:
+                        sale_obj['fiscal_key'] = row[5]
+                        sale_obj['fiscal_xml'] = row[6]
+                        sale_obj['fiscal_url_qrcode'] = row[7]
+                        
+                    sales_data.append(sale_obj)
         except Exception as e:
             results["message"] = f"Error reading local sales: {e}"
             results["success"] = False

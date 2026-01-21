@@ -21,7 +21,6 @@ class DecimalEncoder(json.JSONEncoder):
 class Database:
     def __init__(self, region_name='us-east-1'):
         # 1. Try to load embedded credentials (priority for built exe)
-        # 1. Try to load embedded credentials (priority for built exe)
         print("DEBUG: Waking up Database...")
         try:
             try:
@@ -48,7 +47,7 @@ class Database:
         
         # Table References
         self.public_shops_table = self.dynamodb.Table('SalesApp_PublicShops')
-        self.products_table = self.dynamodb.Table('SalesApp_Products_V3') # V3 Schema
+        self.products_table = self.dynamodb.Table('SalesApp_Products')
         self.sales_table = self.dynamodb.Table('SalesApp_Sales')
         
         self.init_tables()
@@ -77,9 +76,9 @@ class Database:
                 self.products_table.load()
             except ClientError as e:
                 if e.response['Error']['Code'] == 'ResourceNotFoundException':
-                    print("Creating SalesApp_Products_V3 table...")
+                    print("Creating SalesApp_Products table...")
                     self.products_table = self.dynamodb.create_table(
-                        TableName='SalesApp_Products_V3',
+                        TableName='SalesApp_Products',
                         KeySchema=[
                             {'AttributeName': 'product_id', 'KeyType': 'HASH'},    # Partition Key
                         ],
@@ -234,6 +233,12 @@ class Database:
         flavor = product_info.get('sabor', '')
         brand = product_info.get('marca', '')
         
+        # Fiscal Fields
+        ncm = product_info.get('ncm', '')
+        cest = product_info.get('cest', '')
+        cfop = product_info.get('cfop', '')
+        tax_rule = product_info.get('tax_rule', '')
+        
         # If no product_id, this is technically a NEW product entity.
         if not product_id:
             product_id = str(uuid.uuid4())
@@ -254,7 +259,7 @@ class Database:
             
             self.products_table.update_item(
                 Key={'product_id': product_id},
-                UpdateExpression="SET barcode=:code, category=:cat, flavor=:flav, brand=:brand, #p=:price, last_updated=:ts",
+                UpdateExpression="SET barcode=:code, category=:cat, flavor=:flav, brand=:brand, ncm=:ncm, cest=:cest, cfop=:cfop, tax_rule=:tax, #p=:price, last_updated=:ts",
                 ExpressionAttributeNames={
                     '#p': price_attr
                 },
@@ -263,6 +268,10 @@ class Database:
                     ':cat': category,
                     ':flav': flavor,
                     ':brand': brand,
+                    ':ncm': ncm,
+                    ':cest': cest,
+                    ':cfop': cfop,
+                    ':tax': tax_rule,
                     ':price': price,
                     ':ts': timestamp
                 }
@@ -358,6 +367,10 @@ class Database:
                         'categoria': item.get('category', ''),
                         'sabor': item.get('flavor', ''),
                         'marca': item.get('brand', ''),
+                        'ncm': item.get('ncm', ''),
+                        'cest': item.get('cest', ''),
+                        'cfop': item.get('cfop', ''),
+                        'tax_rule': item.get('tax_rule', ''),
                         'preco': float(p_val),
                         'shop_name': shop_name,
                         'last_updated': item.get('last_updated', '')
@@ -375,6 +388,10 @@ class Database:
                             'categoria': item.get('category', ''),
                             'sabor': item.get('flavor', ''),
                             'marca': item.get('brand', ''),
+                            'ncm': item.get('ncm', ''),
+                            'cest': item.get('cest', ''),
+                            'cfop': item.get('cfop', ''),
+                            'tax_rule': item.get('tax_rule', ''),
                             'preco': 0.0,
                             'shop_name': '',
                             'last_updated': item.get('last_updated', '')
@@ -390,6 +407,10 @@ class Database:
                             'categoria': item.get('category', ''),
                             'sabor': item.get('flavor', ''),
                             'marca': item.get('brand', ''),
+                            'ncm': item.get('ncm', ''),
+                            'cest': item.get('cest', ''),
+                            'cfop': item.get('cfop', ''),
+                            'tax_rule': item.get('tax_rule', ''),
                             'preco': float(p_val),
                             'shop_name': s_name,
                             'last_updated': item.get('last_updated', '')
@@ -461,6 +482,10 @@ class Database:
                     'categoria': item.get('category', ''),
                     'sabor': item.get('flavor', ''),
                     'marca': item.get('brand', ''),
+                    'ncm': item.get('ncm', ''),
+                    'cest': item.get('cest', ''),
+                    'cfop': item.get('cfop', ''),
+                    'tax_rule': item.get('tax_rule', ''),
                     'prices': {}
                 }
                 
@@ -506,6 +531,10 @@ class Database:
                 'categoria': item.get('category', ''),
                 'sabor': item.get('flavor', ''),
                 'marca': item.get('brand', ''),
+                'ncm': item.get('ncm', ''),
+                'cest': item.get('cest', ''),
+                'cfop': item.get('cfop', ''),
+                'tax_rule': item.get('tax_rule', ''),
                 'preco': float(item[price_attr]),
                 'shop_name': shop_name
             }
@@ -551,6 +580,10 @@ class Database:
                         'categoria': item.get('category', ''),
                         'sabor': item.get('flavor', ''),
                         'marca': item.get('brand', ''),
+                        'ncm': item.get('ncm', ''),
+                        'cest': item.get('cest', ''),
+                        'cfop': item.get('cfop', ''),
+                        'tax_rule': item.get('tax_rule', ''),
                         'preco': float(item[price_attr]),
                         'shop_name': shop_name
                     })
@@ -581,6 +614,10 @@ class Database:
                     'categoria': item.get('category', ''),
                     'sabor': item.get('flavor', ''),
                     'marca': item.get('brand', ''),
+                    'ncm': item.get('ncm', ''),
+                    'cest': item.get('cest', ''),
+                    'cfop': item.get('cfop', ''),
+                    'tax_rule': item.get('tax_rule', ''),
                     'preco': 0.0, # Default for new shop
                     'reviewed': True,
                     'scanned': True
@@ -635,15 +672,23 @@ class Database:
 
     def record_sale(self, shop_name, sale_data):
         try:
-            self.sales_table.put_item(
-                Item={
-                    'shop_name': shop_name,
-                    'timestamp': str(sale_data['timestamp']), # Convert to string for Range Key
-                    'final_price': decimal.Decimal(str(sale_data['final_price'])),
-                    'payment_method': sale_data['payment_method'],
-                    'products_json': sale_data['products_json']
-                },
-            )
+            item = {
+                'shop_name': shop_name,
+                'timestamp': str(sale_data['timestamp']), # Convert to string for Range Key
+                'final_price': decimal.Decimal(str(sale_data['final_price'])),
+                'payment_method': sale_data['payment_method'],
+                'products_json': sale_data['products_json']
+            }
+            
+            # Add fiscal data if present
+            if 'fiscal_key' in sale_data:
+                item['fiscal_key'] = sale_data['fiscal_key']
+            if 'fiscal_xml' in sale_data:
+                item['fiscal_xml'] = sale_data['fiscal_xml']
+            if 'fiscal_url_qrcode' in sale_data:
+                item['fiscal_url_qrcode'] = sale_data['fiscal_url_qrcode']
+
+            self.sales_table.put_item(Item=item)
             return True
         except ClientError as e:
              print(f"Error recording sale: {e}")

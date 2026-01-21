@@ -102,14 +102,52 @@ class Database:
                 # Index for barcode search
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_barcode ON products(barcode)")
                 
+                # Check for fiscal fields (Migration 3.4)
+                if 'ncm' not in columns:
+                     try:
+                         conn.execute("ALTER TABLE products ADD COLUMN ncm TEXT DEFAULT ''")
+                         conn.execute("ALTER TABLE products ADD COLUMN cest TEXT DEFAULT ''")
+                         conn.execute("ALTER TABLE products ADD COLUMN cfop TEXT DEFAULT ''")
+                         conn.execute("ALTER TABLE products ADD COLUMN tax_rule TEXT DEFAULT ''")
+                     except:
+                         pass
+
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        product_id TEXT PRIMARY KEY,
+                        barcode TEXT,
+                        brand TEXT,
+                        category TEXT,
+                        flavor TEXT,
+                        price REAL,
+                        prices_json TEXT DEFAULT '{}',
+                        metadata_json TEXT,
+                        sync_status TEXT DEFAULT 'synced',
+                        ncm TEXT,
+                        cest TEXT,
+                        cfop TEXT,
+                        tax_rule TEXT
+                    );
+                """)
+                
                 # Check for sales sync_status (Migration 3.3)
                 cursor = conn.execute("PRAGMA table_info(sales)")
-                s_columns = [info[1] for info in cursor.fetchall()]
+                s_columns_info = cursor.fetchall()
+                s_columns = [info[1] for info in s_columns_info]
                 if 'sync_status' not in s_columns:
                     try:
                         conn.execute("ALTER TABLE sales ADD COLUMN sync_status TEXT DEFAULT 'synced'") # Old sales assumed synced
                     except:
                         pass
+                
+                # Check for fiscal columns (Migration 3.5 - Fiscal Storage)
+                if 'fiscal_key' not in s_columns:
+                    try:
+                        conn.execute("ALTER TABLE sales ADD COLUMN fiscal_key TEXT DEFAULT ''")
+                        conn.execute("ALTER TABLE sales ADD COLUMN fiscal_xml TEXT DEFAULT ''")
+                        conn.execute("ALTER TABLE sales ADD COLUMN fiscal_url_qrcode TEXT DEFAULT ''")
+                    except Exception as e:
+                        print(f"Error migrating fiscal columns: {e}")
                 
         except sqlite3.Error as e:
             print(f"Error initializing local database: {e}")
@@ -146,11 +184,17 @@ class Database:
                     # Sync status is 'synced' because we just downloaded it
                     sync_status = 'synced'
                     
-                    data_tuples.append((p_id, barcode, brand, category, flavor, price, prices_json, metadata, sync_status))
+                    # Fiscal Fields
+                    ncm = p.get('ncm', '')
+                    cest = p.get('cest', '')
+                    cfop = p.get('cfop', '')
+                    tax_rule = p.get('tax_rule', '')
+                    
+                    data_tuples.append((p_id, barcode, brand, category, flavor, price, prices_json, metadata, sync_status, ncm, cest, cfop, tax_rule))
                 
                 conn.executemany("""
-                    INSERT INTO products (product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO products (product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status, ncm, cest, cfop, tax_rule)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, data_tuples)
 
                 # Save cached shops
@@ -170,7 +214,7 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products WHERE product_id = ?", (product_id,))
+                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status, ncm, cest, cfop, tax_rule FROM products WHERE product_id = ?", (product_id,))
                 row = cursor.fetchone()
                 if row:
                     return self._row_to_dict(row, shop_name)
@@ -183,7 +227,7 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products WHERE barcode = ?", (barcode,))
+                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status, ncm, cest, cfop, tax_rule FROM products WHERE barcode = ?", (barcode,))
                 rows = cursor.fetchall()
                 results = []
                 for r in rows:
@@ -294,7 +338,7 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status FROM products")
+                cursor.execute("SELECT product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status, ncm, cest, cfop, tax_rule FROM products")
                 rows = cursor.fetchall()
                 return [self._row_to_dict(r) for r in rows]
         except sqlite3.Error as e:
@@ -303,11 +347,12 @@ class Database:
 
     def _row_to_dict(self, row, shop_name=None):
         # Map tuple back to dict expected by GUI (Flat structure)
-        # Table: product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status
-        # Index: 0           1        2      3         4       5      6            7              8
+        # Table: p_id, barcode, brand, category, flavor, price, prices_json, metadata_json, status, ncm, cest, cfop, tax
+        # Index: 0     1        2      3         4       5      6            7              8       9    10    11    12
         
         # Check column count to handle runtime migration
         has_prices = len(row) > 8 
+        has_fiscal = len(row) > 9 
 
         def safe_json_loads(val):
             try:
@@ -329,7 +374,11 @@ class Database:
             'categoria': row[3],
             'sabor': row[4],
             'metadata': metadata,
-            'prices_json': row[6] if has_prices else None
+            'prices_json': row[6] if has_prices else None,
+            'ncm': row[9] if has_fiscal else '',
+            'cest': row[10] if has_fiscal else '',
+            'cfop': row[11] if has_fiscal else '',
+            'tax_rule': row[12] if has_fiscal else ''
         }
         
         # Price Resolution
@@ -368,19 +417,29 @@ class Database:
 
     # --- Sales Methods ---
 
-    def record_sale(self, final_price, payment_method, products_dict):
+    def record_sale(self, final_price, payment_method, products_dict, fiscal_data=None):
         try:
             # Products dict is {product_id: details}
             products_json = json.dumps(products_dict)
             
+            # Fiscal Data
+            fiscal_key = ""
+            fiscal_xml = ""
+            fiscal_url_qrcode = ""
+            
+            if fiscal_data:
+                fiscal_key = fiscal_data.get('chave_acesso', '')
+                fiscal_xml = fiscal_data.get('xml_content', '')
+                fiscal_url_qrcode = fiscal_data.get('url_qrcode', '')
+
             # Use Local Time explicitly
             local_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
             
             with self.get_connection() as conn:
                 conn.execute("""
-                    INSERT INTO sales (timestamp, final_price, payment_method, products_json, sync_status)
-                    VALUES (?, ?, ?, ?, 'pending')
-                """, (local_ts, final_price, payment_method, products_json))
+                    INSERT INTO sales (timestamp, final_price, payment_method, products_json, sync_status, fiscal_key, fiscal_xml, fiscal_url_qrcode)
+                    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+                """, (local_ts, final_price, payment_method, products_json, fiscal_key, fiscal_xml, fiscal_url_qrcode))
         except sqlite3.Error as e:
             print(f"Error recording sale: {e}")
             raise e
@@ -397,7 +456,7 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT timestamp, final_price, payment_method, products_json FROM sales ORDER BY timestamp DESC LIMIT ?", (limit,))
+                cursor.execute("SELECT timestamp, final_price, payment_method, products_json, fiscal_key, fiscal_xml, fiscal_url_qrcode FROM sales ORDER BY timestamp DESC LIMIT ?", (limit,))
                 rows = cursor.fetchall()
                 
                 history = []
@@ -416,12 +475,33 @@ class Database:
                         'Metodo de pagamento': row[2],
                         'Produtos': row[3],
                         'Shop': 'Local', # Metadata
-                        'timestamp': ts
+                        'timestamp': ts,
+                        'fiscal_key': row[4] if len(row) > 4 else '',
+                        'fiscal_xml': row[5] if len(row) > 5 else '',
+                        'fiscal_url_qrcode': row[6] if len(row) > 6 else ''
                     })
                 return history
         except sqlite3.Error as e:
             print(f"Error history: {e}")
             return []
+
+    def update_sale_fiscal_data(self, timestamp, fiscal_data):
+        """Updates an existing sale with NFC-e data."""
+        try:
+            fiscal_key = fiscal_data.get('chave_acesso', '')
+            fiscal_xml = fiscal_data.get('xml_content', '')
+            fiscal_url_qrcode = fiscal_data.get('url_qrcode', '')
+            
+            with self.get_connection() as conn:
+                # Also mark as pending sync so it goes to cloud
+                conn.execute("""
+                    UPDATE sales 
+                    SET fiscal_key=?, fiscal_xml=?, fiscal_url_qrcode=?, sync_status='pending'
+                    WHERE timestamp=?
+                """, (fiscal_key, fiscal_xml, fiscal_url_qrcode, timestamp))
+        except sqlite3.Error as e:
+            print(f"Error updating fiscal data: {e}")
+            raise e
 
     # --- Config ---
     def set_config(self, key, value):
@@ -467,6 +547,37 @@ class Database:
     def get_selected_shop(self):
         return self.get_config('selected_shop')
 
+    def get_shop_details(self):
+        """
+        Returns shop details for receipt.
+        Since SQLite doesn't store full shop info, we mock it based on name.
+        """
+        shop = self.get_selected_shop()
+        if not shop: 
+             shop = self.get_config('current_shop')
+        
+        if not shop: return {}
+        
+        # Mock Data for receipt matching known logos
+        if "DOKI" in shop.upper():
+            return {
+                'name': "Doki Vila Nova", # Consistent Name
+                'cnpj': '42.158.423/0001-20', # Example or Real if known
+                'address': 'Rua Dr. Alceu Campos Rodrigues, 341',
+                'phone': '(11) 3845-1234',
+                'message': 'Doki - O melhor para voce!'
+            }
+        elif "LOLLA" in shop.upper():
+            return {
+                'name': "Lolla Vila Nova",
+                'cnpj': '30.123.456/0001-00',
+                'address': 'Rua Balthazar da Veiga, 123',
+                'phone': '(11) 3045-6789',
+                'message': 'Lolla - Sabor Unico!'
+            }
+            
+        return {'name': shop}
+
     def set_selected_shop(self, shop_name):
         self.set_config('selected_shop', shop_name)
 
@@ -504,6 +615,11 @@ class Database:
             except:
                 price = 0.0
 
+            ncm = product_info.get('ncm', '')
+            cest = product_info.get('cest', '')
+            cfop = product_info.get('cfop', '')
+            tax_rule = product_info.get('tax_rule', '')
+
             # Merge Prices Logic (Fix for Store Manager / Delta Sync)
             current_prices = {}
             # Try to fetch existing prices first
@@ -526,15 +642,19 @@ class Database:
             product_info['marca'] = brand
             product_info['categoria'] = category
             product_info['sabor'] = flavor
+            product_info['ncm'] = ncm
+            product_info['cest'] = cest
+            product_info['cfop'] = cfop
+            product_info['tax_rule'] = tax_rule
             product_info['prices'] = current_prices # Keep metadata consistent too
             
             metadata = json.dumps(product_info)
             
             with self.get_connection() as conn:
                 conn.execute("""
-                    INSERT OR REPLACE INTO products (product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (p_id, barcode, brand, category, flavor, price, prices_json_str, metadata, sync_status))
+                    INSERT OR REPLACE INTO products (product_id, barcode, brand, category, flavor, price, prices_json, metadata_json, sync_status, ncm, cest, cfop, tax_rule)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (p_id, barcode, brand, category, flavor, price, prices_json_str, metadata, sync_status, ncm, cest, cfop, tax_rule))
                 
             return p_id
         except sqlite3.Error as e:

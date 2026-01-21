@@ -35,6 +35,11 @@ class StoreManagerApp:
         self.W_FLAVOR = 300 # Wider
         self.W_PRICE = 90
         
+        # Fiscal Widths
+        self.W_NCM = 100
+        self.W_CFOP = 70
+        self.W_TAX = 120
+        
         # Colors
         self.COLOR_EDITED = ft.Colors.BLUE_900
         self.COLOR_REVIEWED = ft.Colors.GREEN_900
@@ -164,6 +169,10 @@ class StoreManagerApp:
                          'marca': p.get('marca', ''),
                          'categoria': p.get('categoria', ''),
                          'sabor': p.get('sabor', ''),
+                         'ncm': p.get('ncm', ''),
+                         'cest': p.get('cest', ''),
+                         'cfop': p.get('cfop', ''),
+                         'tax_rule': p.get('tax_rule', ''),
                          'preco': price_val
                      }
                      
@@ -193,6 +202,10 @@ class StoreManagerApp:
                             'marca': p.get('marca', ''),
                             'categoria': p.get('categoria', ''),
                             'sabor': p.get('sabor', ''),
+                            'ncm': p.get('ncm', ''),
+                            'cest': p.get('cest', ''),
+                            'cfop': p.get('cfop', ''),
+                            'tax_rule': p.get('tax_rule', ''),
                             'preco': price_val
                         }
                         try:
@@ -314,6 +327,9 @@ class StoreManagerApp:
             create_header_btn("Marca", "marca", self.W_TEXT),
             create_header_btn("Categoria", "categoria", self.W_CAT),
             create_header_btn("Sabor", "sabor", self.W_FLAVOR),
+            ft.Text("NCM", width=self.W_NCM, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            ft.Text("CFOP", width=self.W_CFOP, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            ft.Text("Regra", width=self.W_TAX, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
         ]
         
         for shop in self.known_shops:
@@ -383,12 +399,34 @@ class StoreManagerApp:
                  on_change=lambda e, prod=p: self.update_metadata(prod, 'sabor', e.control.value, e.control)
             )
 
+            # Fiscal Inputs
+            txt_ncm = ft.TextField(
+                value=p.get('ncm', ''), width=self.W_NCM, content_padding=5, text_size=13,
+                bgcolor=ft.Colors.TRANSPARENT, border_color=ft.Colors.TRANSPARENT,
+                on_change=lambda e, prod=p: self.update_metadata(prod, 'ncm', e.control.value, e.control)
+            )
+            txt_cfop = ft.TextField(
+                value=p.get('cfop', '5102'), width=self.W_CFOP, content_padding=5, text_size=13,
+                bgcolor=ft.Colors.TRANSPARENT, border_color=ft.Colors.TRANSPARENT,
+                on_change=lambda e, prod=p: self.update_metadata(prod, 'cfop', e.control.value, e.control)
+            )
+            
+            # Tax Rule - Dropdown or Text? Text for now to save space, or simple code
+            txt_tax = ft.TextField(
+                value=p.get('tax_rule', ''), width=self.W_TAX, content_padding=5, text_size=13,
+                bgcolor=ft.Colors.TRANSPARENT, border_color=ft.Colors.TRANSPARENT,
+                on_change=lambda e, prod=p: self.update_metadata(prod, 'tax_rule', e.control.value, e.control)
+            )
+
             row_controls = [
                 ft.Row([btn_check, btn_delete], spacing=0, width=80),
                 txt_barcode,
                 txt_brand,
                 txt_cat,
-                txt_flavor
+                txt_flavor,
+                txt_ncm,
+                txt_cfop,
+                txt_tax
             ]
             
             for shop in self.known_shops:
@@ -557,6 +595,10 @@ class StoreManagerApp:
                         'marca': item.get('marca', ''),
                         'categoria': item.get('categoria', ''),
                         'sabor': item.get('sabor', ''),
+                        'ncm': item.get('ncm', ''),
+                        'cest': item.get('cest', ''),
+                        'cfop': item.get('cfop', ''),
+                        'tax_rule': item.get('tax_rule', ''),
                         'prices': prices_map
                     }
                 

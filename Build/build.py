@@ -55,10 +55,10 @@ def main():
         print("Starting PyInstaller build...")
         
         # Build Launcher
-        build_launcher(project_root, arch_suffix)
+        # build_launcher(project_root, arch_suffix)
         
         # Build Main App
-        # build_app(project_root, arch_suffix)
+        build_app(project_root, arch_suffix)
 
     except Exception as e:
         print(f"Build failed with exception: {e}")

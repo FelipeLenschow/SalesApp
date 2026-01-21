@@ -6,6 +6,10 @@ import os
 import os
 from PIL import Image, ImageDraw, ImageFont
 import datetime
+try:
+    import qrcode
+except ImportError:
+    qrcode = None
 
 
 
@@ -51,8 +55,11 @@ class Printer:
                 img = image_input
             
             # Resize logic:
-            # Max width for 58mm printer is ~384 dots usually.
-            MAX_WIDTH = 384
+            # Max width for 58mm printer is ~384 dots.
+            # Max width for 80mm printer is ~576 dots.
+            # We will try to detect or default to larger if image suggests it, or keep it safe?
+            # User complaint suggests 80mm paper usage.
+            MAX_WIDTH = 576 
             if img.width > MAX_WIDTH:
                 ratio = MAX_WIDTH / img.width
                 # Use nearest or box for speed/simplicity with text? Lanczos is fine.
@@ -129,6 +136,146 @@ class Printer:
         """Removes accents and ensures ascii compatible text for basic thermal printers."""
         return unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode('utf-8')
 
+    def _print_header_image(self, ser, shop_name, shop_details):
+        """
+        Generates and prints the Shop Header (Logo + Text).
+        """
+        try:
+            # Canvas Settings
+            # 80mm printer max width is ~576 dots.
+            # Using 550 to leave safe margins.
+            PAGE_WIDTH = 550 
+            HEADER_HEIGHT = 160 # Increased height to accommodate larger text/logo
+            
+            img = Image.new('RGB', (PAGE_WIDTH, HEADER_HEIGHT), color='white')
+            draw = ImageDraw.Draw(img)
+            
+            # 1. Load Logo
+            logo_path = None
+            base_path = os.path.dirname(os.path.abspath(__file__)) # src/
+            project_root = os.path.dirname(base_path) # Sales/
+            assets_dir = os.path.join(project_root, "assets")
+            
+            print(f"DEBUG: Looking for logo in {assets_dir} for {shop_name}")
+            
+            if "DOKI" in shop_name.upper():
+                 logo_path = os.path.join(assets_dir, "doki_logo.png")
+            elif "LOLLA" in shop_name.upper():
+                 logo_path = os.path.join(assets_dir, "lolla_logo.png")
+            
+            logo_width = 0
+            if logo_path and os.path.exists(logo_path):
+                try:
+                    logo = Image.open(logo_path)
+                    
+                    # Handle Transparency (RGBA -> RGB with white bg)
+                    if logo.mode in ('RGBA', 'LA') or (logo.mode == 'P' and 'transparency' in logo.info):
+                        alpha = logo.convert('RGBA').split()[-1]
+                        bg = Image.new("RGB", logo.size, (255, 255, 255))
+                        bg.paste(logo, mask=alpha)
+                        logo = bg
+                    else:
+                        logo = logo.convert("RGB")
+                    
+                    MAX_W = 130 # Slightly wider
+                    MAX_H = 100
+                    logo.thumbnail((MAX_W, MAX_H), Image.Resampling.LANCZOS)
+                    
+                    # Vertical Center relative to new height
+                    y_pos = (HEADER_HEIGHT - logo.height) // 2
+                    # If text takes up space, maybe align top? 
+                    y_pos = 10 # Top padding
+                    
+                    img.paste(logo, (5, y_pos))
+                    logo_width = logo.width + 15 # Padding
+                    print(f"DEBUG: Logo loaded. W={logo.width} H={logo.height}")
+                except Exception as e:
+                    print(f"Logo load error: {e}")
+            else:
+                 print(f"DEBUG: Logo not found at {logo_path}")
+
+            # 2. Draw Text on Right
+            try:
+                font_path = "C:/Windows/Fonts/arial.ttf"
+                if not os.path.exists(font_path): font_path = "arial.ttf"
+                
+                # Increased sizes
+                font_title = ImageFont.truetype(font_path, 24) 
+                font_text = ImageFont.truetype(font_path, 20) # Was 18
+                font_small = ImageFont.truetype(font_path, 20) # Was 16 (User wants same size)
+            except:
+                font_title = ImageFont.load_default()
+                font_text = ImageFont.load_default()
+                font_small = ImageFont.load_default()
+
+            text_x = logo_width
+            current_y = 10
+            
+            # Simple Text Wrapping Helper
+            def draw_multiline(text, x, y, font, max_width):
+                words = text.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    bbox = draw.textbbox((0, 0), test_line, font=font)
+                    w = bbox[2] - bbox[0]
+                    if w <= max_width:
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                lines.append(' '.join(current_line))
+                
+                dy = y
+                for line in lines:
+                    draw.text((x, dy), line, font=font, fill=(0,0,0))
+                    bbox = draw.textbbox((0, 0), line, font=font)
+                    h = bbox[3] - bbox[1]
+                    dy += h + 5 # Line spacing
+                return dy
+
+            # Shop Name
+            available_width = PAGE_WIDTH - text_x - 5
+            
+            current_y = draw_multiline(self._normalize(shop_name), text_x, current_y, font_title, available_width)
+            current_y += 5 # Gap after title
+            
+            # Details
+            if shop_details:
+                if shop_details.get('address'):
+                    addr = self._normalize(shop_details['address'])
+                    current_y = draw_multiline(addr, text_x, current_y, font_text, available_width)
+                    current_y += 5
+                
+                if shop_details.get('cnpj'):
+                    current_y = draw_multiline(f"CNPJ: {shop_details['cnpj']}", text_x, current_y, font_small, available_width)
+                    current_y += 5
+
+                if shop_details.get('phone'):
+                     current_y = draw_multiline(f"Tel: {shop_details['phone']}", text_x, current_y, font_small, available_width)
+
+            # Auto-crop logic (same as before) logic reused...
+
+            # Auto-crop
+            try:
+                from PIL import ImageOps
+                gray_header = img.convert('L')
+                inv_header = ImageOps.invert(gray_header)
+                header_bbox = inv_header.getbbox()
+                if header_bbox:
+                    top = max(0, header_bbox[1] - 5)
+                    bottom = min(HEADER_HEIGHT, header_bbox[3] + 5)
+                    img = img.crop((0, top, PAGE_WIDTH, bottom))
+            except Exception as e:
+                print(f"Crop error: {e}")
+
+            self.print_image(img, ser)
+            return True
+        except Exception as e:
+            print(f"Header Generation Error: {e}")
+            return False
+
     def print_receipt(self, sale_data, shop_name, shop_details=None):
         """
         Prints the receipt. 
@@ -158,139 +305,8 @@ class Printer:
 
             
             # --- HEADER GENERATION ---
-            # Create a combined image: Logo (Left) + Text (Right)
-            
-            # Canvas Settings
-            PAGE_WIDTH = 375
-            # Start with a tall canvas, then crop
-            HEADER_HEIGHT = 100 
-            
-            img = Image.new('RGB', (PAGE_WIDTH, HEADER_HEIGHT), color='white')
-
-
-
-            draw = ImageDraw.Draw(img)
-            
-            # 1. Load Logo
-            logo_path = None
-            if "DOKI" in shop_name.upper():
-                 logo_path = os.path.join("assets", "doki_logo.png")
-            elif "LOLLA" in shop_name.upper():
-                 logo_path = os.path.join("assets", "lolla_logo.png")
-            
-            logo_width = 0
-            if logo_path and os.path.exists(logo_path):
-                logo = Image.open(logo_path)
-                
-                # Auto-crop whitespace
-                # Convert to grayscale for bbox detection if needed, or just use alpha/inv
-                # Assuming white background, we need to invert to find content?
-                # Or if transparent?
-                # The generated logos are usually black on white.
-                # Invert to treat black as content
-                try:
-                    gray = logo.convert('L')
-                    # Invert: content is black (0), bg is white (255) -> Invert: content (255)
-                    from PIL import ImageOps
-                    inverted = ImageOps.invert(gray)
-                    bbox = inverted.getbbox()
-                    if bbox:
-                        logo = logo.crop(bbox)
-                except:
-                    pass # Keep original if crop fails
-
-                # Resize logo to fit nicely on left (e.g., up to 120px wide)
-                # But maintain aspect ratio.
-                # Max width: 120, Max Height: HEADER_HEIGHT (130)
-                
-                MAX_W = 120
-                MAX_H = HEADER_HEIGHT - 10
-                
-                logo.thumbnail((MAX_W, MAX_H), Image.Resampling.LANCZOS)
-                
-                # Paste at (0, 5) padding
-                # Center vertically?
-                y_pos = (HEADER_HEIGHT - logo.height) // 2
-                img.paste(logo, (0, y_pos))
-                logo_width = logo.width + 30 # Increased Padding
-
-
-            
-            # 2. Draw Text on Right
-            # Try to load a font, or default
-            try:
-                # Force Windows Font Path for reliability
-                font_path = "C:/Windows/Fonts/arial.ttf"
-                if not os.path.exists(font_path):
-                     # Try generic name if path doesn't exist
-                     font_path = "arial.ttf"
-
-                font_title = ImageFont.truetype(font_path, 22) # Slightly larger
-                font_text = ImageFont.truetype(font_path, 18)
-                font_small = ImageFont.truetype(font_path, 16)
-                print(f"Loaded font: {font_path}")
-            except Exception as e:
-                print(f"Font load warning: {e}. Using default.")
-                font_title = ImageFont.load_default()
-                font_text = ImageFont.load_default()
-                font_small = ImageFont.load_default()
-
-            text_x = logo_width
-            current_y = 5
-            
-            # Draw black text (0,0,0) explicitly
-            # Shop Name
-            draw.text((text_x, current_y), self._normalize(shop_name), font=font_title, fill=(0,0,0))
-
-            current_y += 25
-            
-            # Address & Details
-            if shop_details:
-                if shop_details.get('address'):
-                    # Simple wrap or truncation?
-                    addr = self._normalize(shop_details['address'])
-                    draw.text((text_x, current_y), addr, font=font_text, fill=(0,0,0))
-                    current_y += 22
-                
-                if shop_details.get('cnpj'):
-                    draw.text((text_x, current_y), f"CNPJ: {shop_details['cnpj']}", font=font_small, fill=(0,0,0))
-                    current_y += 20
-                    
-                if shop_details.get('phone'):
-                     draw.text((text_x, current_y), f"Tel: {shop_details['phone']}", font=font_small, fill=(0,0,0))
-                     current_y += 20
-
-            
-            # Add Payment/Time into the image or print below? 
-            # User said: "to the right... and then the time, the header, payment method"
-            # It seems like "Store Info" is right of logo.
-            # "Time, Header (what header?), Payment Method" might be below?
-            # Let's put Time/Payment below the graphical header to keep it clean.
-            
-            # Auto-crop the whole header image to remove unused white space
-            try:
-                # Convert to grayscale -> Invert -> BBox
-                from PIL import ImageOps
-                gray_header = img.convert('L')
-                inv_header = ImageOps.invert(gray_header)
-                header_bbox = inv_header.getbbox()
-                if header_bbox:
-                    # Crop to content height, keeping full width? 
-                    # Usually we want full width for align, but vertical crop is key.
-                    # bbox is (left, top, right, bottom)
-                    # We want (0, top, 384, bottom) to avoid shift? 
-                    # Yes, keep X=0 to maintain relative structure if we want centered-ish look?
-                    # The logo is at X=0, so left should be close to 0. 
-                    # Let's crop full width: (0, bbox[1], PAGE_WIDTH, bbox[3])
-                    # Add small padding
-                    top = max(0, header_bbox[1] - 5)
-                    bottom = min(HEADER_HEIGHT, header_bbox[3] + 5)
-                    img = img.crop((0, top, PAGE_WIDTH, bottom))
-            except Exception as e:
-                print(f"Header crop error: {e}")
-
-            # Print the generated Header
-            self.print_image(img, ser)
+            # Used extracted method
+            self._print_header_image(ser, shop_name, shop_details)
 
             
             # --- SUB-HEADER (Time, Payment) ---
@@ -381,4 +397,203 @@ class Printer:
 
         except Exception as e:
             print(f"Printer Error: {e}")
+            return False
+
+
+
+    def print_nfce_mock(self, fiscal_result, sale_payload, shop_details=None):
+        """
+        Prints a simulated NFC-e receipt (DANFE Mock).
+        Uses standard header styling.
+        """
+        if not self.port:
+            print("Printer port not set.")
+            return False
+
+        try:
+            ser = serial.Serial(self.port, self.baudrate, timeout=1)
+            
+            # Helper to send text
+            def send_text(text, align='LEFT', bold=False, size='NORMAL'):
+                # Reset
+                ser.write(b'\x1b\x21\x00') 
+                
+                # Align
+                if align == 'CENTER':
+                    ser.write(b'\x1b\x61\x01')
+                elif align == 'RIGHT':
+                    ser.write(b'\x1b\x61\x02')
+                else:
+                    ser.write(b'\x1b\x61\x00')
+                
+                # Bold / Size
+                # ESC ! n
+                # Bit 0: unused
+                # Bit 1: unused
+                # Bit 2: unused
+                # Bit 3: Bold
+                # Bit 4: Double Height
+                # Bit 5: Double Width
+                mode = 0
+                if bold: mode += 8
+                if size == 'LARGE': mode += 16 + 32
+                if size == 'DOUBLE_H': mode += 16
+                if size == 'DOUBLE_W': mode += 32
+                
+                ser.write(b'\x1b\x21' + bytes([mode]))
+                
+                ser.write(self._normalize(text).encode('utf-8', errors='ignore'))
+                ser.write(b'\n')
+
+            # --- HEADER ---
+            # Use Reused Method from print_receipt
+            # Construct shop_details if not passed, but we should pass it.
+            emitente = sale_payload['emitente']
+            shop_name = emitente.get('nome', 'LOJA')
+            
+            # Initialize printer for graphics? No, _print_header_image handles it
+            
+            # Print Graphical Header
+            if shop_details:
+                 self._print_header_image(ser, shop_name, shop_details)
+            else:
+                 # Fallback if no shop_details passed
+                 details_fallback = {
+                     'cnpj': emitente.get('cnpj'),
+                     'address': emitente.get('endereco')
+                 }
+                 self._print_header_image(ser, shop_name, details_fallback)
+            
+            # Sub-Header specific to NFC-e
+            ser.write(b'\x1b\x61\x01') # Center
+            send_text("Documento Auxiliar da Nota Fiscal", 'CENTER', bold=True)
+            send_text("de Consumidor Eletronica", 'CENTER', bold=True)
+            ser.write(b'\n')
+
+            # --- ITEMS ---
+            # --- ITEMS ---
+            # Standard Receipt Layout (Single Line, Truncated)
+            # ITEM (Left 20) | QTD x UNIT (Center 15) | VALOR (Right 10)
+            
+            # Header
+            header_line = f"{'ITEM'.ljust(20)} {'QTD x UNIT'.center(15)} {'VALOR'.rjust(10)}"
+            send_text(header_line, 'LEFT')
+            send_text("-" * 48, 'LEFT')
+            
+            items = sale_payload['itens']
+            for i, item in enumerate(items):
+                desc = item['descricao']
+                qty = item['quantidade']
+                unit_price = item['valor_unitario']
+                total_item = item['valor_total']
+                
+                # Format Quantity
+                if isinstance(qty, float):
+                    qty_str = f"{qty:.0f}" if qty.is_integer() else f"{qty:.2f}"
+                else:
+                    qty_str = str(qty)
+
+                # Math string: "2x5.00"
+                math_str = f"{qty_str}x{unit_price:.2f}"
+                
+                # Total string
+                total_str = f"{total_item:.2f}"
+                
+                # Column Widths
+                COL_NAME = 20
+                COL_MATH = 15
+                COL_TOTAL = 10
+                
+                # Truncate Name
+                name_disp = desc[:COL_NAME]
+                
+                # Compose Line
+                line = f"{name_disp.ljust(COL_NAME)} {math_str.center(COL_MATH)} {total_str.rjust(COL_TOTAL)}"
+                send_text(line, 'LEFT')
+
+            send_text("-" * 48, 'LEFT') # Separator after items
+
+            # --- TOTALS ---
+            pay_info = sale_payload['pagamento']
+            total = pay_info['valor'] if isinstance(pay_info['valor'], (int, float)) else 0.0
+            
+            send_text(f"QTD. TOTAL DE ITENS                    {len(items)}", 'LEFT')
+            
+            # Totals Large like receipt
+            ser.write(b'\x1b\x61\x02') # Right align
+            ser.write(b'\x1b\x21\x10') # Double height
+            ser.write(f"TOTAL: R${total:.2f}\n".encode('utf-8'))
+            ser.write(b'\x1b\x21\x00') # Reset
+            
+            # Translate payment code
+            codes = {'01':'Dinheiro', '03':'Cartao Credito', '04':'Cartao Debito', '17':'Pix'}
+            pay_desc = codes.get(pay_info['forma'], 'Outros')
+            
+            send_text(f"FORMA PAGAMENTO: {pay_desc}            {total:.2f}", 'LEFT')
+            
+            ser.write(b'\n')
+
+            # Footer Message from Shop
+            if shop_details and shop_details.get('message'):
+                ser.write(b'\x1b\x61\x01') # Center
+                ser.write(f"\n{self._normalize(shop_details['message'])}\n".encode('utf-8'))
+                ser.write(b'\n')
+
+            # --- FISCAL DETAILS (MOCK) ---
+            send_text("EMISSAO NORMAL (MOCK)", 'CENTER', bold=True)
+            send_text(f"Numero: {fiscal_result['numero']} Serie: {fiscal_result['serie']} Emissao: {fiscal_result.get('data_emissao', '')}", 'CENTER')
+            send_text("Consulte pela Chave de Acesso em:", 'CENTER')
+            send_text("http://nfce.fazenda.sp.gov.br/consulta", 'CENTER')
+            send_text("CHAVE DE ACESSO", 'CENTER', bold=True)
+            
+            # Format key in groups of 4
+            key = fiscal_result['chave_acesso']
+            formatted_key = " ".join([key[i:i+4] for i in range(0, len(key), 4)])
+            send_text(formatted_key, 'CENTER')
+            
+            ser.write(b'\n')
+
+            # --- QR CODE ---
+            if qrcode:
+                try:
+                    # Generate QR Code
+                    qr_url = fiscal_result.get('url_qrcode', 'http://nfce.fazenda.sp.gov.br/qrcode')
+                    qr = qrcode.QRCode(
+                        version=1,
+                        error_correction=qrcode.constants.ERROR_CORRECT_L,
+                        box_size=4,
+                        border=1,
+                    )
+                    qr.add_data(qr_url)
+                    qr.make(fit=True)
+
+                    img_qr = qr.make_image(fill_color="black", back_color="white")
+                    
+                    # Center align before image
+                    ser.write(b'\x1b\x61\x01')
+                    
+                    # Use existing print_image logic (we need to pass 'ser' to it, or refactor)
+                    # refactoring print_image to take 'ser' as argument was done in my previous thought? 
+                    # No, print_image signature is: print_image(self, image_input, ser)
+                    # So we can just call it.
+                    self.print_image(img_qr._img, ser) # _img is the PIL image usually for qrcode lib
+                    
+                except Exception as e:
+                     print(f"QR Gen Error: {e}")
+                     send_text("<< ERRO QR CODE >>", 'CENTER', bold=True)
+            else:
+                send_text("<< QR CODE SIMULADO (Instale 'qrcode') >>", 'CENTER', bold=True)
+            
+            ser.write(b'\n')
+            send_text("CONSUMIDOR NAO IDENTIFICADO", 'CENTER')
+            ser.write(b'\n\n\n\n')
+            
+            # Cut
+            ser.write(b'\x1d\x56\x00') 
+            
+            ser.close()
+            return True
+            
+        except Exception as e:
+            print(f"Error printing NFC-e mock: {e}")
             return False

@@ -17,6 +17,7 @@ from src.serial_scanner import SerialScanner
 from src.printer import Printer
 
 import src.db_sqlite as sqlite_db
+from src.fiscal import FiscalManager
 
 Version = "2.2.1"
 
@@ -32,6 +33,8 @@ class ProductApp:
         self.sale = None
         self.pay = None
         self.stored_sales = []
+        self.last_sale_data = None # Store last finalized sale for NFC-e
+        self.fiscal_manager = FiscalManager()
 
         # Dictionary to keep track of widgets for each product
         self.product_widgets = {}
@@ -63,7 +66,9 @@ class ProductApp:
         
         
         # Printer Init
-        self.printer_port = None # Will be set by connect_printer
+        self.printer_port = None 
+        self.printer = None
+        self.initialize_printer()
 
 
 
@@ -333,6 +338,31 @@ class ProductApp:
         threading.Thread(target=schedule_reconnect, daemon=True).start()
 
 
+    def initialize_printer(self):
+        try:
+            # Simple auto-detect logic
+            # Using the static method from Printer class if available, or just trying COM11 as user hinted
+            # But let's verify if find_printer_port is static
+            
+            # Try to find port
+            port = Printer.find_printer_port()
+            if not port:
+                # Fallback based on user logs "Printer connected on COM11"
+                # If finding fails, let's try COM11 explicitly if it exists
+                # But find_printer_port should find it if it has "ELGIN" or similar.
+                # Let's enforce COM11 if detected as such in logs? 
+                # User log: "Detected scanner on COM11 but this is the PRINTER port (COM11). Ignoring."
+                # So we know COM11 is the printer.
+                port = "COM11"
+            
+            if port:
+                print(f"Initializing Printer on {port}")
+                self.printer = Printer(port=port)
+                self.printer_port = port
+            else:
+                print("Printer port not found.")
+        except Exception as e:
+            print(f"Error initializing printer: {e}")
 
     def on_window_event(self, e):
         if e.data == "maximize":
@@ -393,33 +423,6 @@ class ProductApp:
 
     def mark_unsynced(self):
         self.sync_manager.mark_unsynced()
-
-    def print_receipt_handler(self, e):
-        if not self.sale or not self.sale.current_sale:
-            self.show_error("Nenhuma venda para imprimir.")
-            return
-
-        def _print_task():
-            try:
-                # FIX: Pass the detected port
-                port_to_use = self.printer_port or "COM11"
-                printer = Printer(port=port_to_use)
-                
-                # Fetch shop details
-                shop_details = self.product_db.get_shop_details()
-                
-                success = printer.print_receipt(self.sale, self.shop, shop_details=shop_details)
-
-
-                if success:
-                    self.show_error("Enviado para impressora!")
-                else:
-                    self.show_error("Erro ao imprimir. Verifique a impressora.")
-            except Exception as ex:
-                print(f"Print error: {ex}")
-                self.show_error(f"Erro: {ex}")
-
-        threading.Thread(target=_print_task, daemon=True).start()
 
     def select_product(self, product):
         self.ui.hide_dropdown()
@@ -1159,7 +1162,7 @@ class ProductApp:
 
     def finalize_sale(self, internal_id):
         def process_sale():
-            # Record sale to SQLite
+            # Record sale to SQLite (Without fiscal data initially)
             print(f"DEBUG FINALIZED: ID={internal_id}, Price={final_price:.2f}, Time={datetime.now()}")
             try:
                 self.product_db.record_sale(
@@ -1185,8 +1188,6 @@ class ProductApp:
         # Apply promotion and calculate final price
         final_price = sale.calculate_total()
 
-        # Save sale details
-        # Save sale logic moved to record_sale
         # Save sale details
         # Save sale logic moved to record_sale
         threading.Thread(target=process_sale).start()
