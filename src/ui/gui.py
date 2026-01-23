@@ -19,7 +19,7 @@ from src.printer import Printer
 import src.db_sqlite as sqlite_db
 from src.fiscal import FiscalManager
 
-Version = "2.2.1"
+Version = "2.2.2"
 
 class ProductApp:
     def __init__(self, page: ft.Page):
